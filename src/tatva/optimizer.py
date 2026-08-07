@@ -1,9 +1,8 @@
 """
-TATVA Precision Quantization and Schedule Optimization Module.
+TATVA Precision Quantization and Kernel Selection Module.
 
-This module handles precision quantization transforms (FP32 -> INT8) on Relax
-IRModules, attention/softmax fusion optimizations, and provides configuration
-comparison benchmarking utilities.
+Holds the INT8 quantization transform on Relax IRModules, the optimized-softmax
+kernel selection pass, and the configuration comparison benchmark.
 """
 
 from typing import Any, List
@@ -12,19 +11,168 @@ import numpy as np
 
 from tatva.compiler import ModelIR, TargetVariant
 
+# INT8 symmetric quantization uses the signed range [-127, 127]; -128 is dropped so
+# that negating a quantized value cannot overflow.
+INT8_QMAX = 127.0
+
+# Used when activation calibration is unavailable. It is a guess, and callers are
+# told so via metadata["activation_scale_source"] rather than being left to assume
+# the number came from the model.
+FALLBACK_ACTIVATION_SCALE = 0.05
+
+# Clipping percentile for activation calibration. Measured over the five fixtures in
+# models/ (3 input seeds each, normalized MSE against the onnxruntime reference):
+#
+#   fixed 0.05  0.0142      p99.9   0.0098   <- chosen
+#   max         0.0233      p99.5   0.0095
+#   p99.99      0.0227      p99     0.0137
+#
+# Calibrating on the true max is the *worst* option: one outlier sets the step size
+# for every other value. p99.9 clips a thousandth of the values and buys back the
+# resolution, and it beats or ties the old hardcoded 0.05 on every fixture.
+CALIBRATION_PERCENTILE = 99.9
 
 
-
-
-def quantize(model_ir: ModelIR) -> ModelIR:
+def calibrate_activation_scale(
+    onnx_path: str,
+    inputs: dict[str, Any] | None = None,
+    percentile: float = CALIBRATION_PERCENTILE,
+) -> tuple[float, str]:
     """
-    Simulate quantization on the Relax IRModule by inserting Quantize-Dequantize (QDQ)
-    operators around inputs and weights of MatMul and Dense operations.
+    Measure the activation range of a model by running it once on the host.
+
+    Only the tensors the quantizer actually touches are measured: the non-constant
+    inputs of MatMul and Gemm nodes. Those are temporarily promoted to graph outputs,
+    the model is run with the same dummy inputs the benchmark harness uses, and the
+    `percentile` of their pooled magnitudes sets a symmetric INT8 scale.
+
+    Two things are deliberate here. Restricting to matmul inputs keeps an unrelated
+    tensor from setting the scale -- on models/model_pretrained.onnx the peak over
+    all activations is 208 while the peak over matmul inputs is 11.4. And clipping at
+    a percentile rather than the max keeps a lone outlier from coarsening the step
+    for everything else; see CALIBRATION_PERCENTILE for the measurements.
+
+    Returns (scale, source) where `source` describes how the number was obtained, so
+    a caller can tell a measured scale from a fallback.
+    """
+    import onnx
+    import onnxruntime as ort
+
+    from tatva.runner import default_inputs_for
+
+    try:
+        model = onnx.load(onnx_path)
+        initializers = {i.name for i in model.graph.initializer}
+        produced = {name for node in model.graph.node for name in node.output if name}
+
+        wanted = {
+            inp
+            for node in model.graph.node
+            if node.op_type in ("MatMul", "Gemm")
+            for inp in node.input
+            if inp and inp not in initializers and inp in produced
+        }
+        scope = "matmul inputs"
+        if not wanted:
+            # No matmul takes a computed activation (all operands are weights or
+            # graph inputs). Fall back to the widest evidence available.
+            wanted = produced
+            scope = "all intermediates"
+
+        # A bare ValueInfoProto with only a name lets onnxruntime infer the type
+        # itself. Declaring TensorProto.UNDEFINED instead is rejected outright
+        # ("Invalid tensor data type 0"), which silently sent every model down the
+        # fallback path.
+        existing = {o.name for o in model.graph.output}
+        for name in sorted(wanted):
+            if name not in existing:
+                vi = onnx.ValueInfoProto()
+                vi.name = name
+                model.graph.output.append(vi)
+
+        sess = ort.InferenceSession(model.SerializeToString())
+        feed = inputs if inputs is not None else default_inputs_for(onnx_path)
+        expected = {i.name for i in sess.get_inputs()}
+        outputs = sess.run(None, {k: v for k, v in feed.items() if k in expected})
+        out_names = [o.name for o in sess.get_outputs()]
+    except Exception as e:
+        return FALLBACK_ACTIVATION_SCALE, f"fallback (calibration run failed: {e})"
+
+    magnitudes: list[np.ndarray] = []
+    for name, arr in zip(out_names, outputs):
+        if name not in wanted:
+            continue
+        arr = np.asarray(arr)
+        if arr.size == 0 or not np.issubdtype(arr.dtype, np.floating):
+            continue
+        finite = np.abs(arr[np.isfinite(arr)]).ravel()
+        if finite.size:
+            magnitudes.append(finite)
+
+    if not magnitudes:
+        return FALLBACK_ACTIVATION_SCALE, "fallback (no finite float activations observed)"
+
+    pooled = np.concatenate(magnitudes)
+    cutoff = float(np.percentile(pooled, percentile))
+    if cutoff <= 0.0:
+        # Everything below the percentile is zero; fall back to the true peak so the
+        # scale is at least non-degenerate.
+        cutoff = float(pooled.max())
+    if cutoff <= 0.0:
+        return FALLBACK_ACTIVATION_SCALE, "fallback (all observed activations were zero)"
+
+    return cutoff / INT8_QMAX, (
+        f"calibrated on host ({scope}, p{percentile:g} |activation| = {cutoff:.6g}, "
+        f"max = {float(pooled.max()):.6g})"
+    )
+
+
+def _weight_scale(arr: np.ndarray) -> float:
+    """
+    Symmetric per-tensor INT8 scale for one weight tensor, from its own values.
+
+    A fixed scale (this used to be 0.02) either wastes most of the INT8 range on a
+    small-magnitude tensor or clips a large one; neither failure is visible in the
+    graph, only in the output.
+    """
+    finite = arr[np.isfinite(arr)] if arr.size else arr
+    peak = float(np.abs(finite).max()) if finite.size else 0.0
+    if peak <= 0.0:
+        return 1.0 / INT8_QMAX
+    return peak / INT8_QMAX
+
+
+def quantize(model_ir: ModelIR, activation_scale: float | None = None) -> ModelIR:
+    """
+    Insert INT8 Quantize-Dequantize pairs around the inputs of MatMul and Dense.
+
+    Scales are derived from data, not assumed. Each weight tensor gets its own
+    symmetric scale from its own values; the activation scale is measured by running
+    the source model once on the host (see calibrate_activation_scale). The previous
+    version hardcoded 0.05 for activations and 0.02 for weights regardless of the
+    model, which is what "dynamic quantization" was never doing.
+
+    Pass `activation_scale` to skip calibration and use an explicit value.
     """
     import tvm
     from tvm import relax
 
     mod = model_ir.mod
+    metadata = model_ir.metadata.copy()
+
+    if activation_scale is not None:
+        act_scale, act_source = float(activation_scale), "caller-supplied"
+    else:
+        source_path = metadata.get("source_path")
+        if source_path:
+            act_scale, act_source = calibrate_activation_scale(source_path)
+        else:
+            act_scale, act_source = (
+                FALLBACK_ACTIVATION_SCALE,
+                "fallback (no source model path recorded on this IR)",
+            )
+
+    weight_scales: list[float] = []
 
     @relax.expr_functor.mutator
     class QuantizationMutator(relax.PyExprMutator):
@@ -36,8 +184,7 @@ def quantize(model_ir: ModelIR) -> ModelIR:
                 arg0 = call.args[0]
                 arg1 = call.args[1]
 
-                # Inserting QDQ for activation input (arg0) using self.builder_.emit with unique name_hint
-                scale0 = relax.const(0.05, "float32")
+                scale0 = relax.const(act_scale, "float32")
                 zp0 = relax.const(0, "int32")
                 q0 = self.builder_.emit(
                     relax.op.quantize(arg0, scale0, zp0, out_dtype="int8"),
@@ -48,8 +195,17 @@ def quantize(model_ir: ModelIR) -> ModelIR:
                     name_hint="dequant_act"
                 )
 
-                # Inserting QDQ for weights input (arg1) using self.builder_.emit with unique name_hint
-                scale1 = relax.const(0.02, "float32")
+                # Per-tensor weight scale, measured when the weights are a constant.
+                # A non-constant right-hand side (batched attention matmul) has no
+                # values to measure here, so it falls back to the activation scale --
+                # both sides of that product are activations anyway.
+                if isinstance(arg1, relax.Constant):
+                    wt_scale = _weight_scale(arg1.data.numpy())
+                else:
+                    wt_scale = act_scale
+                weight_scales.append(wt_scale)
+
+                scale1 = relax.const(wt_scale, "float32")
                 zp1 = relax.const(0, "int32")
                 q1 = self.builder_.emit(
                     relax.op.quantize(arg1, scale1, zp1, out_dtype="int8"),
@@ -81,8 +237,11 @@ def quantize(model_ir: ModelIR) -> ModelIR:
     bb.update_func(gv, mutated_func)
     mutated_mod = bb.finalize()
 
-    metadata = model_ir.metadata.copy()
     metadata["quantized"] = True
+    metadata["activation_scale"] = act_scale
+    metadata["activation_scale_source"] = act_source
+    metadata["weight_scales"] = weight_scales
+    metadata["quantized_ops"] = len(weight_scales)
 
     return ModelIR(mutated_mod, None, metadata)
 
@@ -130,14 +289,17 @@ def check_softmax_fusable(model_ir: ModelIR) -> tuple[bool, str]:
     return True, ""
 
 
-def fuse_attention_softmax(model_ir: ModelIR) -> ModelIR:
+def select_fast_softmax_kernel(model_ir: ModelIR) -> ModelIR:
     """
     Request TATVA's Schraudolph fast-exponential softmax kernel for this model.
 
-    This does not rewrite the Relax graph. It sets a flag that runner.compile_model
-    acts on, replacing TVM's generated softmax kernels in the emitted C with TATVA's
-    own. The name is kept for API compatibility; see `softmax_fusion_skipped` in the
-    returned metadata when the pass declines to apply.
+    This does NOT fuse anything and does not rewrite the Relax graph -- the older
+    name `fuse_attention_softmax` described an operation that never happened. What it
+    does is set a flag that runner.compile_model acts on, replacing TVM's generated
+    softmax kernels in the emitted C with TATVA's own hand-written one.
+
+    The returned IR carries either metadata["softmax_optimized"] = True or
+    metadata["softmax_fusion_skipped"] = <reason>; it never declines silently.
     """
     from tatva.compiler import analyze_graph
 
@@ -159,6 +321,11 @@ def fuse_attention_softmax(model_ir: ModelIR) -> ModelIR:
 
     metadata["softmax_optimized"] = True
     return ModelIR(model_ir.mod, None, metadata)
+
+
+# Kept so existing callers and saved scripts keep working. New code should use
+# select_fast_softmax_kernel, which says what the pass actually does.
+fuse_attention_softmax = select_fast_softmax_kernel
 
 
 def compare_configs(
@@ -209,7 +376,7 @@ def compare_configs(
         results["quantized"] = {"latency": res_quant, "logits": quant_logits, "build_dir": artifact_quant.build_dir}
 
     if "fused" in configs:
-        fused_model_ir = fuse_attention_softmax(model_ir)
+        fused_model_ir = select_fast_softmax_kernel(model_ir)
         skipped["fused"] = fused_model_ir.metadata.get("softmax_fusion_skipped")
         artifact_fused = compile_model(fused_model_ir, variant, warmup_count=2, timed_count=5)
         res_fused = run_and_measure(artifact_fused, environment=ExecutionEnvironment.QEMU_SIM)
@@ -227,7 +394,7 @@ def compare_configs(
         opt_model_ir = model_ir
         # Order of execution: fuse first (recommmended), then quantize
         if "fuse" in opt_passes:
-            opt_model_ir = fuse_attention_softmax(opt_model_ir)
+            opt_model_ir = select_fast_softmax_kernel(opt_model_ir)
             skipped["optimized"] = opt_model_ir.metadata.get("softmax_fusion_skipped")
         if "quantize" in opt_passes:
             opt_model_ir = quantize(opt_model_ir)

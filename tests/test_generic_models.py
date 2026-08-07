@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from tatva.compiler import TARGETS, import_model, resolve_input_shapes
-from tatva.optimizer import check_softmax_fusable, fuse_attention_softmax
+from tatva.optimizer import check_softmax_fusable, select_fast_softmax_kernel
 from tatva.runner import (
     ExecutionEnvironment,
     compile_model,
@@ -81,7 +81,7 @@ def test_fuse_records_skip_reason_instead_of_silently_passing(mlp_model_path) ->
     """
     pytest.importorskip("tvm")
     ir = import_model(str(mlp_model_path))
-    fused = fuse_attention_softmax(ir)
+    fused = select_fast_softmax_kernel(ir)
     assert fused.metadata.get("softmax_optimized") is not True
     assert fused.metadata.get("softmax_fusion_skipped")
 

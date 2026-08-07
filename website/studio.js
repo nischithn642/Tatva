@@ -7,6 +7,15 @@ let currentModelPath = null;
 let currentScaffoldData = null;
 let scafModelCache = [];
 
+// The scaffolder falls back to a fixed starter template when no LLM is reachable.
+// Naming that outcome is the difference between "the engine built what you asked for"
+// and "you got the same nine files everyone gets".
+function workspaceSourceLabel(source) {
+  if (source === 'llm') return 'generated from your prompt';
+  if (source === 'template') return '⚠ built-in starter template (no LLM reachable — your prompt did not shape the code)';
+  return 'not reported';
+}
+
 // Tab Navigation Handler
 window.switchTab = function(tabName) {
   const views = ['dashboard', 'model', 'target', 'opt', 'execution', 'results', 'diag', 'ai', 'experimental'];
@@ -272,16 +281,20 @@ window.generateScaffold = async function() {
     if (window.pywebview && window.pywebview.api && window.pywebview.api.run_autonomous_loop) {
       const res = await window.pywebview.api.run_autonomous_loop(promptText, targetName, modelName);
       if (term) {
-        term.innerHTML += `<p class="text-emerald-400 font-bold">🎉 Autonomous Closed-Loop Cycle Completed Successfully!</p><p class="text-gray-300">Attempts Used: ${res.attempts_used || 1}/5 | Files Created: ${(res.files || []).length}</p>`;
+        // Report the real outcome; the success banner used to print unconditionally.
+        term.innerHTML += res.success
+          ? `<p class="text-emerald-400 font-bold">🎉 Autonomous Closed-Loop Cycle Completed Successfully!</p>`
+          : `<p class="text-red-400 font-bold">❌ Autonomous Closed-Loop Cycle did not converge.${res.last_stage ? ` Failed at: ${res.last_stage}` : ''}</p>`;
+        term.innerHTML += `<p class="text-gray-300">Source: ${workspaceSourceLabel(res.workspace_source)} | Attempts Used: ${res.attempts_used || 1}/5 | Files Created: ${(res.files || []).length}</p>`;
+        if (res.error) term.innerHTML += `<p class="text-red-400">${res.error}</p>`;
       }
       switchTab('experimental');
     } else {
-      setTimeout(() => {
-        if (term) {
-          term.innerHTML += `<p class="text-emerald-400 font-bold">[SIMULATED HARDWARE LOOP LOG]</p><p class="text-gray-300">Cross-Compilation: OK | QEMU Emulation: OK | Parity Match: 100%</p>`;
-        }
-        switchTab('experimental');
-      }, 1500);
+      // Nothing ran without the bridge; a fabricated "Parity Match: 100%" here was
+      // indistinguishable from a real verified run.
+      if (term) {
+        term.innerHTML += `<p class="text-amber-400 font-bold">⚠ Not connected to the TATVA backend — nothing was compiled or emulated.</p><p class="text-gray-300">Launch this window with <code>tatva gui</code> instead of opening index.html directly.</p>`;
+      }
     }
   } catch (err) {
     if (term) term.innerHTML += `<p class="text-red-400">[ERROR] Autonomous Loop Exception: ${err}</p>`;
@@ -407,16 +420,22 @@ window.triggerAutonomousLoop = async function() {
       const res = await window.pywebview.api.run_autonomous_loop(promptText, targetName, modelName);
       currentScaffoldData = res.files || [];
       if (term) {
-        term.innerText += `\n🎉 Autonomous Closed-Loop Cycle Completed Successfully!\n  Attempts Used: ${res.attempts_used}/5\n  Files Created: ${currentScaffoldData.length}\n`;
+        // Report what happened. This used to print the success banner unconditionally,
+        // so a loop that exhausted all 5 attempts still read as a clean run.
+        const head = res.success
+          ? `\n🎉 Autonomous Closed-Loop Cycle Completed Successfully!`
+          : `\n❌ Autonomous Closed-Loop Cycle did not converge.${res.last_stage ? ` Failed at: ${res.last_stage}` : ''}`;
+        term.innerText += `${head}\n  Source: ${workspaceSourceLabel(res.workspace_source)}\n  Attempts Used: ${res.attempts_used}/5\n  Files Created: ${currentScaffoldData.length}\n`;
+        if (!res.success && res.last_stderr) term.innerText += `\n${res.last_stderr}\n`;
+        if (res.error) term.innerText += `\n${res.error}\n`;
       }
       switchTab('experimental');
     } else {
-      setTimeout(() => {
-        if (term) {
-          term.innerText += `\n[SIMULATED HARDWARE LOOP LOG]\nCross-Compilation: OK\nQEMU Emulation: OK\nParity Match: 100%\n`;
-        }
-        switchTab('experimental');
-      }, 1500);
+      // No Python bridge means nothing ran. Saying so beats printing a fake
+      // "Parity Match: 100%" log for a cycle that never happened.
+      if (term) {
+        term.innerText += `\n⚠ Not connected to the TATVA backend — nothing was compiled or emulated.\n  Launch this window with \`tatva gui\` instead of opening index.html directly.\n`;
+      }
     }
   } catch (err) {
     if (term) term.innerText += `\n❌ Autonomous Loop Exception: ${err}\n`;

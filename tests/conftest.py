@@ -1,6 +1,22 @@
 import pytest
 from pathlib import Path
+from tatva._cache import clear_cache
 from tatva.runner import find_riscv_gcc, find_qemu
+
+
+@pytest.fixture(autouse=True)
+def isolated_session_cache():
+    """
+    Give every test a cold session cache.
+
+    GLOBAL_SESSION_CACHE is a module-level singleton keyed on file content, so without
+    this a test silently inherits the imported IR and compiled artifacts of whichever
+    tests ran before it. That makes a failure depend on the rest of the suite, which is
+    the single worst property a test can have.
+    """
+    clear_cache()
+    yield
+    clear_cache()
 
 @pytest.fixture
 def baseline_model_path() -> Path:

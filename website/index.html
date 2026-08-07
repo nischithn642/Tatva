@@ -166,7 +166,7 @@
       </button>
       
       <button onclick="switchTab('ai')" id="nav-ai" class="nav-item text-[var(--text-secondary)] hover:text-[var(--text-primary)] w-full flex items-center px-3.5 py-2.5 text-xs font-medium text-left">
-        <i data-lucide="sparkles" class="w-4 h-4 mr-3 text-[var(--accent-blue)]"></i> AI Assistant (Gemini)
+        <i data-lucide="sparkles" class="w-4 h-4 mr-3 text-[var(--accent-blue)]"></i> AI Assistant
       </button>
       
       <button onclick="switchTab('experimental')" id="nav-experimental" class="nav-item text-[var(--text-secondary)] hover:text-[var(--text-primary)] w-full flex items-center px-3.5 py-2.5 text-xs font-medium text-left">
@@ -469,7 +469,7 @@
       <section id="view-opt" class="space-y-6 hidden">
         <div>
           <h1 class="text-2xl font-bold text-[var(--text-primary)] tracking-tight">Schedule Optimization Passes</h1>
-          <p class="text-[var(--text-secondary)] text-xs mt-1">Configure custom TVM schedule mutators, Softmax fusion kernels, and dynamic quantization passes.</p>
+          <p class="text-[var(--text-secondary)] text-xs mt-1">Configure custom TVM schedule mutators, fast-softmax kernel selection, and calibrated INT8 quantization passes.</p>
         </div>
 
         <div class="grid grid-cols-1 gap-4">
@@ -623,24 +623,24 @@
         </div>
       </section>
 
-      <!-- ================= 8. AI ASSISTANT (GEMINI) VIEW ================= -->
+      <!-- ================= 8. AI ASSISTANT VIEW ================= -->
       <section id="view-ai" class="space-y-6 hidden">
         <div>
-          <h1 class="text-2xl font-bold text-[var(--text-primary)] tracking-tight">AI Assistant &amp; Copilot (Gemini Style)</h1>
-          <p class="text-[var(--text-secondary)] text-xs mt-1">Interactive compiler prompt interface with markdown rendering.</p>
+          <h1 class="text-2xl font-bold text-[var(--text-primary)] tracking-tight">AI Assistant</h1>
+          <p class="text-[var(--text-secondary)] text-xs mt-1">Ask your configured LLM (local Ollama, NVIDIA NIM, or Anthropic) about TATVA compiler passes and targets.</p>
         </div>
 
         <div class="gemini-card p-6 space-y-4">
           <div id="chat-stream" class="space-y-3 font-mono text-xs max-h-80 overflow-y-auto p-4 rounded-2xl bg-[var(--bg-secondary)] border border-[var(--border-card)]">
             <div class="p-3 rounded-xl bg-[var(--bg-card)] border border-[var(--border-card)] text-[var(--text-primary)]">
-              <span class="font-bold text-[var(--accent-blue)]">TATVA AI Copilot:</span> Welcome! Ask me to optimize your model schedules, select target ABIs, or resolve compiler warnings.
+              <span class="font-bold text-[var(--accent-blue)]">TATVA Assistant:</span> Answers come from the LLM you configure (local Ollama, NVIDIA NIM, or Anthropic). If none is reachable, this panel says so rather than guessing.
             </div>
           </div>
 
           <!-- Wide Pill-Shaped Input Box Centered at Bottom -->
           <div class="flex items-center bg-[var(--bg-secondary)] border border-[var(--border-card)] focus-within:border-[var(--accent-blue)] rounded-full px-4 py-2 space-x-2">
             <i data-lucide="sparkles" class="w-4 h-4 text-[var(--accent-blue)] shrink-0"></i>
-            <input type="text" id="ai-chat-input" placeholder="Ask Gemini Copilot to tune your model pass..." class="flex-1 bg-transparent text-xs text-[var(--text-primary)] focus:outline-none">
+            <input type="text" id="ai-chat-input" placeholder="Ask about targets, passes, or a compiler error..." class="flex-1 bg-transparent text-xs text-[var(--text-primary)] focus:outline-none">
             <button onclick="sendAiPrompt()" class="bg-[var(--accent-blue)] text-white font-semibold px-4 py-1.5 rounded-full text-xs hover:opacity-90">
               Send
             </button>
@@ -1004,23 +1004,52 @@
       }
     }
 
-    function sendAiPrompt() {
-      const input = document.getElementById('ai-chat-input');
+    function escapeHtml(s) {
+      const d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    function appendChat(who, body, colorVar) {
       const stream = document.getElementById('chat-stream');
-      if (!input || !stream || !input.value.trim()) return;
+      if (!stream) return null;
+      const el = document.createElement('div');
+      el.className = 'p-3 rounded-xl bg-[var(--bg-card)] border border-[var(--border-card)] text-[var(--text-primary)] font-sans whitespace-pre-wrap';
+      el.innerHTML = `<span class="font-bold" style="color:var(${colorVar})">${escapeHtml(who)}:</span> ${escapeHtml(body)}`;
+      stream.appendChild(el);
+      stream.scrollTop = stream.scrollHeight;
+      return el;
+    }
+
+    // Routes to whichever LLM the user configured, via the Python bridge. This used
+    // to print one hardcoded sentence about "Gemini" regardless of the question --
+    // there is no Gemini integration in TATVA.
+    async function sendAiPrompt() {
+      const input = document.getElementById('ai-chat-input');
+      if (!input || !input.value.trim()) return;
 
       const txt = input.value.trim();
       input.value = '';
+      appendChat('You', txt, '--accent-blue');
 
-      stream.innerHTML += `
-        <div class="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 text-[var(--text-primary)] font-sans">
-          <span class="font-bold text-[var(--accent-blue)]">User:</span> ${txt}
-        </div>
-        <div class="p-3 rounded-xl bg-[var(--bg-card)] border border-[var(--border-card)] text-[var(--text-primary)] font-sans">
-          <span class="font-bold text-[var(--accent-green)]">Gemini Copilot:</span> Analyzing target optimization for <code>${txt}</code>. Recommended schedule: Softmax kernel fusion with 8-bit dynamic quantization pass.
-        </div>
-      `;
-      stream.scrollTop = stream.scrollHeight;
+      if (!(window.pywebview && window.pywebview.api && window.pywebview.api.ask_assistant)) {
+        appendChat('Assistant unavailable', 'The Python bridge is not connected. Run this window with `tatva gui` rather than opening index.html directly in a browser.', '--accent-orange');
+        return;
+      }
+
+      const pending = appendChat('Assistant', 'Thinking...', '--accent-green');
+      try {
+        const res = await window.pywebview.api.ask_assistant(txt, '', '');
+        if (pending) pending.remove();
+        if (res && res.success) {
+          appendChat(`Assistant (${res.model || 'local'})`, res.reply, '--accent-green');
+        } else {
+          appendChat('Assistant unavailable', (res && res.error) || 'Unknown error.', '--accent-orange');
+        }
+      } catch (e) {
+        if (pending) pending.remove();
+        appendChat('Assistant unavailable', String(e), '--accent-orange');
+      }
     }
 
     // Load build info on PyWebView ready

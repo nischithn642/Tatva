@@ -8,7 +8,6 @@ with strict timeouts and toolchain discovery.
 import os
 import shutil
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple

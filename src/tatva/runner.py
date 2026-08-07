@@ -43,6 +43,49 @@ __all__ = [
 
 PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
+# How many unnamed build directories to keep before pruning the oldest.
+_BUILD_DIR_KEEP = 8
+
+
+def build_root() -> str:
+    """
+    Where a build goes when the caller does not name a directory.
+
+    This used to be `<project>/scratch`, which is wrong twice over. PROJECT_DIR is
+    derived from this file's location, so for a pip-installed wheel it resolves inside
+    site-packages and TATVA writes build trees into the user's virtualenv. And when the
+    project *is* checked out normally it frequently lives in a synced folder (OneDrive,
+    Dropbox), where every file GCC writes is immediately locked, scanned and uploaded --
+    which is how a 120-second compile step starts timing out during a long test run.
+
+    Set TATVA_BUILD_DIR to put builds somewhere specific.
+    """
+    root = os.environ.get("TATVA_BUILD_DIR") or os.path.join(tempfile.gettempdir(), "tatva-builds")
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
+def _prune_old_builds(root: str, keep: int = _BUILD_DIR_KEEP) -> None:
+    """
+    Drop all but the `keep` newest build directories under `root`.
+
+    Only directories this module created are considered -- the `tatva_build_` prefix is
+    the whole guard. Without this the old default grew to 71 directories and 1.3 GB on
+    the development machine, because nothing ever deleted one.
+    """
+    try:
+        entries = [
+            os.path.join(root, name)
+            for name in os.listdir(root)
+            if name.startswith("tatva_build_") and os.path.isdir(os.path.join(root, name))
+        ]
+        entries.sort(key=os.path.getmtime, reverse=True)
+        for stale in entries[keep:]:
+            shutil.rmtree(stale, ignore_errors=True)
+    except OSError:
+        # Pruning is housekeeping; never let it fail a compile.
+        pass
+
 # Assembly entry point stub for bare-metal targets under OpenSBI
 START_S = """
 .section .text.init
@@ -709,10 +752,7 @@ def verify_target(variant: TargetVariant) -> dict[str, Any]:
             "error": f"QEMU RISC-V {variant.bitness}-bit emulator binary not found.",
         }
 
-    scratch_dir = os.path.join(PROJECT_DIR, "scratch")
-    os.makedirs(scratch_dir, exist_ok=True)
-
-    with tempfile.TemporaryDirectory(dir=scratch_dir) as tmpdir:
+    with tempfile.TemporaryDirectory(dir=build_root()) as tmpdir:
         main_c_path = os.path.join(tmpdir, "main.c")
         start_s_path = os.path.join(tmpdir, "start.S")
         link_ld_path = os.path.join(tmpdir, "link.ld")
@@ -806,9 +846,9 @@ def compile_model(
     from tvm import relax
 
     if output_dir is None:
-        scratch_dir = os.path.join(PROJECT_DIR, "scratch")
-        os.makedirs(scratch_dir, exist_ok=True)
-        build_dir = tempfile.mkdtemp(prefix="tatva_build_", dir=scratch_dir)
+        root = build_root()
+        _prune_old_builds(root)
+        build_dir = tempfile.mkdtemp(prefix="tatva_build_", dir=root)
     else:
         build_dir = output_dir
         os.makedirs(build_dir, exist_ok=True)
@@ -1193,17 +1233,15 @@ def compile_model(
     with open(os.path.join(build_dir, "operators.c"), "w") as f:
         f.write(operators_c)
 
-    tvm_dir = os.path.dirname(tvm.__file__)
-    tvm_ffi_dir = os.path.dirname(tvm_ffi.__file__)
-    tvm_include = os.path.join(tvm_dir, "include")
-    tvm_ffi_include = os.path.join(tvm_ffi_dir, "include")
-
-    dest_include = os.path.join(build_dir, "include")
-    os.makedirs(dest_include, exist_ok=True)
-    if os.path.exists(tvm_include):
-        shutil.copytree(tvm_include, dest_include, dirs_exist_ok=True)
-    if os.path.exists(tvm_ffi_include):
-        shutil.copytree(tvm_ffi_include, dest_include, dirs_exist_ok=True)
+    # Point GCC at TVM's headers where they already are. Copying both include trees
+    # into every build directory meant thousands of files per compile -- the single
+    # slowest step in the pipeline, and the one that made builds fight the OS file
+    # scanner. They are read-only inputs; there is no reason to duplicate them.
+    include_dirs = [
+        os.path.join(os.path.dirname(tvm.__file__), "include"),
+        os.path.join(os.path.dirname(tvm_ffi.__file__), "include"),
+    ]
+    include_dirs = [d for d in include_dirs if os.path.isdir(d)]
 
     with open(os.path.join(build_dir, "start.S"), "w") as f:
         f.write(START_S)
@@ -1261,7 +1299,7 @@ def compile_model(
         os.path.join(build_dir, "main.c"),
         os.path.join(build_dir, "model_run.c"),
         os.path.join(build_dir, "operators.c"),
-        f"-I{os.path.join(build_dir, 'include')}",
+        *[f"-I{d}" for d in include_dirs],
         "-o",
         elf_path,
         "-lm",
@@ -1269,7 +1307,10 @@ def compile_model(
     ]
 
     try:
-        res = subprocess.run(compile_cmd, capture_output=True, text=True, timeout=120)
+        # Generous: the largest fixture takes a few seconds on an idle machine, but a
+        # laptop that is also running QEMU and a file scanner is a different story, and
+        # a timeout here surfaces as an unexplained CompilationError.
+        res = subprocess.run(compile_cmd, capture_output=True, text=True, timeout=600)
         if res.returncode != 0:
             raise CompilationError(
                 stage="cross-compilation",

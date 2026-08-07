@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from tatva.compiler import TARGETS, import_model, analyze_graph
-from tatva.optimizer import fuse_attention_softmax
+from tatva.optimizer import select_fast_softmax_kernel
 from tatva.runner import (
     ExecutionEnvironment,
     compile_model,
@@ -56,7 +56,7 @@ def test_rv64gcv_model_compilation_and_parity(pretrained_model_path, skip_if_no_
     assert stats.total_ops > 0
 
     variant = TARGETS["RV64GCV"]
-    fused_ir = fuse_attention_softmax(ir)
+    fused_ir = select_fast_softmax_kernel(ir)
     assert fused_ir.metadata.get("softmax_optimized") is True
 
     build_dir = tmp_path / "rvv_build"

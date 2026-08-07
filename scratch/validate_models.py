@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 import numpy as np
 from tatva.compiler import import_model, analyze_graph, TARGETS, UnsupportedOperatorError
-from tatva.optimizer import fuse_attention_softmax
+from tatva.optimizer import select_fast_softmax_kernel
 from tatva.runner import establish_baseline, compile_model, run_and_measure, ExecutionEnvironment
 from tatva.diagnostics import MemoryLimitExceededError, AccuracyDropError
 
@@ -61,7 +61,7 @@ def validate_single_model(model_path: Path, variant_name: str = "RV64GC", tolera
         res["baseline_ms"] = baseline_res.latency_result.mean_ms
 
         # 3. Softmax/Attention Fusion Optimization
-        fused_ir = fuse_attention_softmax(ir)
+        fused_ir = select_fast_softmax_kernel(ir)
         
         # 4. Compilation & Execution of Fused Artifact
         build_dir = Path("scratch") / f"val_build_{model_path.stem}"

@@ -255,7 +255,8 @@ def get_offline_explanation(context: DiagnosisContext) -> str:
         return (
             f"{headline}\n"
             f"Mitigation:\n"
-            f"1. Inspect zero-points and scale bounds in dynamic quantization layers.\n"
+            f"1. Re-check the calibrated activation scale (metadata['activation_scale_source']) "
+            f"and the per-tensor weight scales; a clipped scale shows up only in the output.\n"
             f"2. Consider executing passes selectively (e.g. bypassing quantization on sensitive attention subgraphs).\n"
             f"3. Verify input range configurations to ensure valid logits mappings."
         )

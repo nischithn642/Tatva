@@ -15,7 +15,7 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from scaffolding.config import ScaffoldingConfig
-from scaffolding.executor import ScaffoldingExecutor, ToolchainManager
+from scaffolding.executor import ScaffoldingExecutor
 from scaffolding.llm_provider import LLMProvider
 from scaffolding.logger import ScaffoldingLogger
 from scaffolding.loop_agent import LoopAgent

@@ -14,7 +14,7 @@ import time
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
 from tatva.compiler import import_model, analyze_graph, TARGETS, TargetVariant
-from tatva.optimizer import fuse_attention_softmax, compare_configs
+from tatva.optimizer import select_fast_softmax_kernel, compare_configs
 from tatva.runner import compile_model, run_and_measure, establish_baseline, verify_target, ExecutionEnvironment
 
 
@@ -56,7 +56,7 @@ def run_e2e_deployment() -> None:
 
     # 4. Apply Schedule Optimization Passes
     print(f"\n[STEP 4/6] Applying Schraudolph Softmax Fusion Optimization...")
-    opt_model_ir = fuse_attention_softmax(model_ir)
+    opt_model_ir = select_fast_softmax_kernel(model_ir)
     print(f"  - Softmax Kernel Fusion: APPLIED (Single-pass stack-allocated register kernel)")
 
     # 5. C Code Generation & Bare-Metal Cross-Compilation

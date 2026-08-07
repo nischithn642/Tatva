@@ -52,7 +52,7 @@ Mitigation:
 ---
 
 ### Scenario 2: Accuracy Degradation Check (`AccuracyDropError`)
-Raised when validation benchmarks indicate that integer dynamic quantization (or custom scheduling passes) degrades output numerical parity past the allowed accuracy tolerance.
+Raised when validation benchmarks indicate that calibrated INT8 quantization (or custom scheduling passes) degrades output numerical parity past the allowed accuracy tolerance.
 
 #### Whitelisted Metadata Payload
 ```json
@@ -67,7 +67,7 @@ Raised when validation benchmarks indicate that integer dynamic quantization (or
 ```text
 Accuracy degradation check failed: The optimized model has a Mean Squared Error (MSE) of 0.210123 compared to the host reference outputs, exceeding the allowed tolerance threshold of 0.05.
 Mitigation:
-1. Inspect zero-points and scale bounds in dynamic quantization layers.
+1. Re-check the calibrated activation scale (metadata['activation_scale_source']) and the per-tensor weight scales; a clipped scale shows up only in the output.
 2. Consider executing passes selectively (e.g. bypassing quantization on sensitive attention subgraphs).
 3. Verify input range configurations to ensure valid logits mappings.
 ```

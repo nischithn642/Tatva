@@ -15,7 +15,7 @@ import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 # ── Ensure src/ is in sys.path for robust module imports ──────────────────────
 _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -40,7 +40,7 @@ def load_backend_libraries(callback: Any) -> None:
     try:
         from tatva.compiler import DEFAULT_TARGET, TARGETS, analyze_graph, import_model
         from tatva.diagnostics import classify_failure, explain
-        from tatva.optimizer import compare_configs, fuse_attention_softmax, quantize
+        from tatva.optimizer import compare_configs, select_fast_softmax_kernel, quantize
         from tatva.runner import (
             ExecutionEnvironment,
             compile_model,
@@ -55,7 +55,7 @@ def load_backend_libraries(callback: Any) -> None:
         _backend["DEFAULT_TARGET"] = DEFAULT_TARGET
         _backend["verify_target"] = verify_target
         _backend["establish_baseline"] = establish_baseline
-        _backend["fuse_attention_softmax"] = fuse_attention_softmax
+        _backend["select_fast_softmax_kernel"] = select_fast_softmax_kernel
         _backend["quantize"] = quantize
         _backend["compare_configs"] = compare_configs
         _backend["compile_model"] = compile_model
@@ -206,6 +206,21 @@ class TatvaApp(tk.Tk):
         self._configure_styles()
         self._build_layout()
         self._init_scaffolding_agent()
+
+    def _ui_call(self, fn: Callable[[], None]) -> None:
+        """
+        Run `fn` on the Tk main loop from a worker thread.
+
+        Every background task here ends by touching widgets, and `after` raises
+        RuntimeError("main thread is not in main loop") once the window has gone away --
+        during shutdown, or in a test that constructs the app without calling mainloop.
+        That exception surfaced as an unhandled thread crash rather than anything
+        actionable, so swallow exactly that case and let everything else through.
+        """
+        try:
+            self.after(0, fn)
+        except (RuntimeError, tk.TclError):
+            pass
 
     def _configure_styles(self) -> None:
         style = ttk.Style(self)
@@ -624,7 +639,7 @@ class TatvaApp(tk.Tk):
                     def update_err():
                         self.lbl_nv_status.config(text=f"⚠️ {msg}", foreground="#F87171")
                         self.btn_sync_nv.config(state="normal")
-                    self.after(0, update_err)
+                    self._ui_call(update_err)
                 else:
                     formatted_nvidia = [f"NVIDIA: {m}" for m in models]
                     self._all_models_cache = formatted_nvidia
@@ -639,12 +654,17 @@ class TatvaApp(tk.Tk):
                         )
                         self.btn_sync_nv.config(state="normal")
                         self._save_scaffolding_state()
-                    self.after(0, update_ui)
-            except Exception as e:
+                    self._ui_call(update_ui)
+            except Exception as exc:
+                # Bind the text now. Python clears the `as e` name at the end of the
+                # except block, so a closure that read it fired NameError instead of
+                # showing the user why the sync failed.
+                detail = f"⚠️ Could not fetch the NVIDIA model catalog: {exc}"
+
                 def update_ex():
-                    self.lbl_nv_status.config(text=f"⚠️ Failed to fetch NVIDIA model catalog. Verify your nvapi-... key. ({e})", foreground="#F87171")
+                    self.lbl_nv_status.config(text=detail, foreground="#F87171")
                     self.btn_sync_nv.config(state="normal")
-                self.after(0, update_ex)
+                self._ui_call(update_ex)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -986,7 +1006,7 @@ class TatvaApp(tk.Tk):
         try:
             import_fn = _backend["import_model"]
             establish_baseline_fn = _backend["establish_baseline"]
-            fuse_fn = _backend["fuse_attention_softmax"]
+            fuse_fn = _backend["select_fast_softmax_kernel"]
             quantize_fn = _backend["quantize"]
             compile_fn = _backend["compile_model"]
             run_measure_fn = _backend["run_and_measure"]
@@ -1005,9 +1025,12 @@ class TatvaApp(tk.Tk):
             if self.cancel_requested:
                 return
 
-            scratch_dir = os.path.join(os.path.abspath(os.path.dirname(__file__)), "..", "..", "scratch")
-            os.makedirs(scratch_dir, exist_ok=True)
-            build_dir = os.path.join(scratch_dir, f"gui_build_{variant.name}")
+            # Same root the CLI uses, rather than a path relative to this source file --
+            # which for an installed wheel points inside site-packages. See
+            # tatva.runner.build_root.
+            from tatva.runner import build_root
+
+            build_dir = os.path.join(build_root(), f"gui_build_{variant.name}")
             artifact = compile_fn(opt_ir, variant, build_dir, warmup_count=2, timed_count=5)
 
             if self.cancel_requested:
@@ -1030,25 +1053,25 @@ class TatvaApp(tk.Tk):
 
                 mse = float(np.mean((np.array(target_logits[:min_l]) - np.array(baseline_res.ref_logits[:min_l])) ** 2))
 
-            self.after(
-                0,
+            self._ui_call(
                 lambda: self._update_results_ui(
                     baseline_res.latency_result.mean_ms,
                     measurement.mean_ms,
                     mse,
                     measurement.environment,
-                ),
+                )
             )
-        except Exception as e:
+        except Exception as exc:
             classify_fn = _backend.get("classify_failure")
             explain_fn = _backend.get("explain")
 
             if classify_fn and explain_fn:
-                ctx = classify_fn(e)
-                diag_msg = explain_fn(ctx)
-                self.after(0, lambda: self._update_diagnostics_ui(diag_msg))
+                diag_msg = explain_fn(classify_fn(exc))
+                self._ui_call(lambda: self._update_diagnostics_ui(diag_msg))
             else:
-                self.after(0, lambda: self._append_chat_message("Assistant", f"❌ Pipeline Failed: {e}"))
+                # Format now: `exc` is unbound by the time the lambda runs on the UI thread.
+                failure = f"❌ Pipeline Failed: {exc}"
+                self._ui_call(lambda: self._append_chat_message("Assistant", failure))
 
     def _update_results_ui(self, base_ms: float, opt_ms: float, mse: float, env: str) -> None:
         speedup = ((base_ms - opt_ms) / base_ms) * 100.0 if base_ms > 0 else 0.0
@@ -1118,11 +1141,14 @@ class TatvaApp(tk.Tk):
                 res = self.scaffolding_agent.loop_agent.run_autonomous_loop(
                     prompt_text=prompt,
                     model_name=model_name,
-                    log_callback=lambda msg: self.after(0, lambda: self._append_chat_message("Antigravity Engine", msg)),
+                    log_callback=lambda msg: self._ui_call(
+                        lambda: self._append_chat_message("Antigravity Engine", msg)
+                    ),
                 )
-                self.after(0, lambda: self._on_scaffold_generated(res))
-            except Exception as e:
-                self.after(0, lambda: self._append_chat_message("Assistant", f"❌ Scaffolding Error: {e}"))
+                self._ui_call(lambda: self._on_scaffold_generated(res))
+            except Exception as exc:
+                failure = f"❌ Scaffolding Error: {exc}"
+                self._ui_call(lambda: self._append_chat_message("Assistant", failure))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1137,9 +1163,17 @@ class TatvaApp(tk.Tk):
             self._on_scaf_file_selected(None)
 
         self.notebook_art.select(self.tab_scaf_art)
+        # Say which one the user actually got. A template fallback that reads as
+        # "generated from your prompt" is the whole problem this line exists to avoid.
+        source = res.get("workspace_source")
+        origin = {
+            "llm": "Generated from your prompt by the LLM.",
+            "template": "⚠ Built-in starter template — no LLM was reachable, so your prompt did not shape the code.",
+        }.get(source, "Origin not reported.")
         self._append_chat_message(
             "Assistant",
             f"✨ Autonomous closed-loop generation finished for '{res.get('project_name', 'RISC-V Antigravity Starter')}'!\n"
+            f"  Source:        {origin}\n"
             f"  Files created: {len(self.scaffolding_files_data)}\n"
             f"  Attempts used: {res.get('attempts_used', 1)}/5\n"
             f"  Cost:          ${cost:.5f}\n"
@@ -1293,6 +1327,57 @@ class TatvaPyBridge:
         """Return list of NVIDIA model IDs or empty list on failure."""
         res = self.fetch_nvidia_models(api_key)
         return res.get("models", [])
+
+    def ask_assistant(self, prompt: str, model_name: str = "", api_key: str = "") -> Dict[str, Any]:
+        """
+        Send a question to whichever LLM the user has actually configured.
+
+        The assistant panel used to print one canned sentence about "Gemini" for any
+        input; there is no Gemini integration in this project and never was. This
+        routes to the same LLMProvider the scaffolding engine uses, and when nothing
+        is reachable it says so instead of inventing an answer.
+        """
+        prompt = (prompt or "").strip()
+        if not prompt:
+            return {"success": False, "reply": "", "error": "Empty prompt."}
+
+        system_prompt = (
+            "You are the TATVA compiler assistant. TATVA compiles ONNX transformer "
+            "models to standalone C99 bare-metal RISC-V binaries via Apache TVM Relax "
+            "and benchmarks them under QEMU system-mode emulation. Targets are "
+            "RV32IMC, RV32IMAC, RV64GC, RV64IMAFDC, RV64GCV and RV32EMC. Answer "
+            "concisely and say plainly when you do not know."
+        )
+
+        try:
+            from scaffolding.llm_provider import LLMProvider
+
+            provider = LLMProvider()
+            model = (model_name or "").strip()
+            if not model:
+                local = self.get_ollama_models()
+                if not local:
+                    return {
+                        "success": False,
+                        "reply": "",
+                        "error": (
+                            "No LLM is configured. Start a local Ollama server "
+                            "(`ollama serve`), or pick an NVIDIA/Anthropic model and "
+                            "supply its key."
+                        ),
+                    }
+                model = f"Ollama: {local[0]} (Local / Free)"
+
+            reply, cost = provider.query(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                messages=[],
+                model_name=model,
+                api_key=api_key or None,
+            )
+            return {"success": True, "reply": reply, "model": model, "cost_usd": cost, "error": None}
+        except Exception as e:
+            return {"success": False, "reply": "", "error": str(e)}
 
     def validate_model_file(self, model_path: str) -> Dict[str, Any]:
         if not model_path or not os.path.exists(model_path):
@@ -1520,7 +1605,7 @@ def launch_gui() -> None:
     try:
         import webview
         bridge = TatvaPyBridge()
-        window = webview.create_window(
+        webview.create_window(
             "TATVA — Bare-Metal RISC-V Transformer Optimization Studio",
             url=target_url,
             js_api=bridge,

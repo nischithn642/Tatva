@@ -867,8 +867,8 @@ def diagnose(
         selected_passes = [p.strip().lower() for p in passes.split(",")]
         opt_model_ir = model_ir
         if "fuse" in selected_passes:
-            from tatva.optimizer import fuse_attention_softmax
-            opt_model_ir = fuse_attention_softmax(opt_model_ir)
+            from tatva.optimizer import select_fast_softmax_kernel
+            opt_model_ir = select_fast_softmax_kernel(opt_model_ir)
         if "quantize" in selected_passes:
             from tatva.optimizer import quantize
             opt_model_ir = quantize(opt_model_ir)

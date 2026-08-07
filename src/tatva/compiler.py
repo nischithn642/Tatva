@@ -228,6 +228,9 @@ def import_model(path: str, input_shapes: dict[str, tuple[int, ...]] | None = No
         "input_shapes": input_shapes,
         "file_size_bytes": os.path.getsize(path),
         "format": "ONNX",
+        # Kept so later passes can go back to the source graph -- the quantizer
+        # calibrates activation ranges by running the original model on the host.
+        "source_path": os.path.abspath(path),
     }
 
     # Relax packs parameters directly as constants inside the module, so we pass None for params

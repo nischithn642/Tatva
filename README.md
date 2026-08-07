@@ -124,7 +124,7 @@ Empirical benchmark results under bare-metal RISC-V `RV64GC` system emulation (`
 | **model_unsupported.onnx** | 439.1 KB | N/A | N/A | N/A | N/A | N/A | EXPECTED FAIL |
 
 > [!NOTE]
-> **Scalar Quantization Note:** On scalar RISC-V cores (`rv64gc` without vector extensions), INT8 dynamic quantization reduces file storage footprint by 40%–72%, but introduces a +19% to +22% cycle count latency overhead due to loop-by-loop software emulation of dequantization scaling and zero-point casts.
+> **Scalar Quantization Note:** On scalar RISC-V cores (`rv64gc` without vector extensions), INT8 quantization reduces file storage footprint by 40%–72%, but introduces a +19% to +22% cycle count latency overhead due to loop-by-loop software emulation of dequantization scaling and zero-point casts.
 
 ---
 

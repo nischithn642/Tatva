@@ -6,7 +6,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from tatva.compiler import TARGETS, import_model
-from tatva.optimizer import compare_configs, fuse_attention_softmax
+from tatva.optimizer import compare_configs, select_fast_softmax_kernel
 
 
 @pytest.mark.integration
@@ -19,7 +19,7 @@ def test_fusion_applies_only_when_transformer_bottleneck_present(skip_if_no_tool
     model_ir = import_model(model_path)
 
     # 1. Bottleneck present (default for this model)
-    fused_ir = fuse_attention_softmax(model_ir)
+    fused_ir = select_fast_softmax_kernel(model_ir)
     assert fused_ir is not None
     assert fused_ir.metadata.get("softmax_optimized") is True
 
@@ -29,7 +29,7 @@ def test_fusion_applies_only_when_transformer_bottleneck_present(skip_if_no_tool
         mock_report.has_transformer_bottleneck = False
         mock_analyze.return_value = mock_report
 
-        non_fused_ir = fuse_attention_softmax(model_ir)
+        non_fused_ir = select_fast_softmax_kernel(model_ir)
         assert non_fused_ir.metadata.get("softmax_optimized") is not True
 
 

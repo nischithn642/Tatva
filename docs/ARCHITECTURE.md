@@ -48,7 +48,7 @@ Instead of writing a proprietary C/C++ compiler framework from scratch, TATVA ex
 | Module Path | Primary Responsibility |
 | :--- | :--- |
 | `src/tatva/compiler.py` | Model importing (`import_model`), graph analysis (`analyze_graph`), and target variant registry (`TARGETS`). |
-| `src/tatva/optimizer.py` | Schedule optimizations (`fuse_attention_softmax`), dynamic quantization (`quantize`), and `compare_configs`. |
+| `src/tatva/optimizer.py` | Fast-softmax kernel selection (`select_fast_softmax_kernel`), calibrated INT8 quantization (`quantize`, `calibrate_activation_scale`), and `compare_configs`. |
 | `src/tatva/runner.py` | C codegen, RISC-V GCC cross-compilation (`compile_model`), QEMU simulation, and cycle timing (`establish_baseline`). |
 | `src/tatva/diagnostics.py` | Failure classification (`classify_failure`), metadata whitelist gating (`whitelist_payload`), and Claude API / offline explanation engine (`explain`). |
 | `src/tatva/config.py` | Centralized environment variable secret loader (`get_anthropic_api_key`, `get_resend_api_key`, `get_supabase_key`, `mask_secret`). |
