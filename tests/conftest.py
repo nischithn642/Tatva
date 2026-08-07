@@ -1,7 +1,9 @@
-import pytest
 from pathlib import Path
+
+import pytest
+
 from tatva._cache import clear_cache
-from tatva.runner import find_riscv_gcc, find_qemu
+from tatva.runner import find_qemu, find_riscv_gcc
 
 
 @pytest.fixture(autouse=True)
@@ -17,6 +19,22 @@ def isolated_session_cache():
     clear_cache()
     yield
     clear_cache()
+
+
+@pytest.fixture(autouse=True)
+def isolated_user_config(tmp_path, monkeypatch):
+    """
+    Point the scaffolding config at a throwaway directory.
+
+    Without this, ScaffoldingConfig.save() writes to the real per-user location
+    (%APPDATA%/tatva on Windows, ~/.config/tatva elsewhere) and load() reads it back on
+    the next run. That did happen: the suite left a config behind naming a model that no
+    longer exists, and a later test asserting on the *default* model failed against a
+    file it had written itself weeks earlier.
+    """
+    monkeypatch.setenv("TATVA_CONFIG_DIR", str(tmp_path / "config"))
+    yield
+
 
 @pytest.fixture
 def baseline_model_path() -> Path:
@@ -57,11 +75,11 @@ def skip_if_no_toolchain():
 
     # 2. Check GCC and QEMU
     missing = []
-    gcc_name, gcc_path = find_riscv_gcc()
+    _gcc_name, gcc_path = find_riscv_gcc()
     if not gcc_path:
         missing.append("RISC-V GCC")
 
-    qemu_name, qemu_path = find_qemu(64)
+    _qemu_name, qemu_path = find_qemu(64)
     if not qemu_path:
         missing.append("QEMU")
 

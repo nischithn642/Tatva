@@ -12,6 +12,7 @@ from typing import Any
 
 from tatva.diagnostics import ImportInProgressError, UnsupportedOperatorError
 
+
 # Central target configuration from Phase 3
 @dataclass
 class TargetVariant:
@@ -64,8 +65,15 @@ TARGETS: dict[str, TargetVariant] = {
         gcc_mabi="lp64d",
         tvm_target="llvm -mtriple=riscv64-unknown-elf -mabi=lp64d -mcpu=generic-rv64 -mattr=+v",
         bitness=64,
-        experimental=False,
-        notes="64-bit standard extensions plus Vector extension (V1.0). Native SIMD intrinsic hardware acceleration.",
+        # Experimental, and it always was. The C backend emits scalar loops; nothing in
+        # TATVA generates RVV intrinsics, so the "+v" attribute buys you QEMU's vector
+        # unit being *available*, not used. Marking it stable made the CLI hand it out
+        # without the --allow-experimental warning that says exactly this.
+        experimental=True,
+        notes=(
+            "64-bit standard extensions plus the Vector extension (RVV 1.0). The target builds and "
+            "runs, but codegen is scalar C -- vector units are not yet targeted."
+        ),
     ),
     "RV32EMC": TargetVariant(
         name="RV32EMC",
@@ -102,7 +110,6 @@ SUPPORTED_OPS = {
     "unsqueeze",
     "concatenate",
     "split",
-    "cast",
     "mean",
     "sum",
     "tanh",
@@ -262,15 +269,17 @@ def analyze_graph(model_ir: ModelIR) -> GraphReport:
         def visit_call_(self, call):
             super().visit_call_(call)
             if isinstance(call.op, tvm.ir.Op):
+                # Report the same spelling SUPPORTED_OPS uses. The histogram used to
+                # keep TVM's "relax." prefix while the support check stripped it, so
+                # `tatva analyze` printed "relax.nn.softmax" against a documented
+                # supported-op list that says "nn.softmax" -- two names, one operator.
                 op_name = call.op.name
-                # Strip relax. prefix if present
-                clean_op_name = op_name
-                if clean_op_name.startswith("relax."):
-                    clean_op_name = clean_op_name[len("relax."):]
-                
+                if op_name.startswith("relax."):
+                    op_name = op_name[len("relax."):]
+
                 self.op_counts[op_name] = self.op_counts.get(op_name, 0) + 1
                 self.total_ops += 1
-                if clean_op_name not in SUPPORTED_OPS:
+                if op_name not in SUPPORTED_OPS:
                     self.unsupported_ops.add(op_name)
 
     visitor = OpCounter()

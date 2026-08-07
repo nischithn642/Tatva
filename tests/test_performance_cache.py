@@ -11,6 +11,7 @@ Verifies:
 import os
 import sys
 import tempfile
+
 import pytest
 
 from tatva._cache import GLOBAL_SESSION_CACHE, clear_cache
@@ -63,7 +64,7 @@ def test_session_cache_hit_and_invalidation() -> None:
         tmp_path = tmp.name
         # Write dummy ONNX content
         import onnx
-        from onnx import helper, TensorProto
+        from onnx import TensorProto, helper
 
         node = helper.make_node("Relu", ["X"], ["Y"])
         graph = helper.make_graph([node], "test_graph", [

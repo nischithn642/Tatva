@@ -5,7 +5,7 @@ Tests for RISC-V Vector Extension (RV64GCV) compilation, code generation, and QE
 import numpy as np
 import pytest
 
-from tatva.compiler import TARGETS, import_model, analyze_graph
+from tatva.compiler import TARGETS, analyze_graph, import_model
 from tatva.optimizer import select_fast_softmax_kernel
 from tatva.runner import (
     ExecutionEnvironment,
@@ -19,8 +19,12 @@ from tatva.runner import (
 @pytest.mark.unit
 def test_rv64gcv_target_definition() -> None:
     """
-    Assert that RV64GCV target is present in TARGETS registry, configured for rv64gcv,
-    and marked as non-experimental production target.
+    Assert that RV64GCV is registered, configured for rv64gcv, and flagged experimental.
+
+    Experimental is the honest label: TATVA's C backend emits scalar loops, so nothing
+    it generates uses the vector unit. The target builds and runs correctly; it just
+    does not do the thing its name implies yet, and the CLI should say so before
+    someone benchmarks against it.
     """
     assert "RV64GCV" in TARGETS
     variant = TARGETS["RV64GCV"]
@@ -28,7 +32,7 @@ def test_rv64gcv_target_definition() -> None:
     assert variant.gcc_march == "rv64gcv"
     assert variant.gcc_mabi == "lp64d"
     assert variant.bitness == 64
-    assert variant.experimental is False
+    assert variant.experimental is True
 
 
 @pytest.mark.integration

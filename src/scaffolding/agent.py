@@ -12,7 +12,7 @@ Supports:
 import ast
 import json
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from scaffolding.config import ScaffoldingConfig
 from scaffolding.executor import ScaffoldingExecutor
@@ -21,7 +21,7 @@ from scaffolding.logger import ScaffoldingLogger
 from scaffolding.loop_agent import LoopAgent
 
 
-def _ast_check(filename: str, content: str) -> Tuple[bool, str]:
+def _ast_check(filename: str, content: str) -> tuple[bool, str]:
     """
     Run ast.parse() on Python file content.
     Returns (passed: bool, message: str).
@@ -41,10 +41,10 @@ class ScaffoldingAgent:
     Supports multi-turn iteration, local Ollama execution, and autonomous closed-loop self-correction.
     """
 
-    def __init__(self, config: Optional[ScaffoldingConfig] = None) -> None:
+    def __init__(self, config: ScaffoldingConfig | None = None) -> None:
         self.config = config or ScaffoldingConfig.load()
         self.logger = ScaffoldingLogger(self.config.log_file)
-        self.chat_history: List[Dict[str, str]] = []
+        self.chat_history: list[dict[str, str]] = []
         self.cumulative_cost_usd: float = 0.0
         self.llm_provider = LLMProvider()
         self.executor = ScaffoldingExecutor()
@@ -58,9 +58,9 @@ class ScaffoldingAgent:
     def generate(
         self,
         prompt_text: str,
-        model_name: Optional[str] = None,
-        custom_api_key: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        model_name: str | None = None,
+        custom_api_key: str | None = None,
+    ) -> dict[str, Any]:
         """
         Generate structured scaffolding files from user prompt.
         Appends to multi-turn chat history. Returns file list with AST validation results.
@@ -87,8 +87,10 @@ class ScaffoldingAgent:
                     }
                     for msg in self.chat_history
                 ]
+                from tatva.config import ANTHROPIC_MODEL
+
                 response = client.messages.create(
-                    model="claude-3-5-sonnet-20241022",
+                    model=ANTHROPIC_MODEL,
                     max_tokens=4096,
                     system=self.config.system_prompt,
                     messages=messages_payload,
@@ -149,9 +151,9 @@ class ScaffoldingAgent:
     def iterate(
         self,
         follow_up_prompt: str,
-        model_name: Optional[str] = None,
-        custom_api_key: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        model_name: str | None = None,
+        custom_api_key: str | None = None,
+    ) -> dict[str, Any]:
         """
         Multi-turn: append a follow-up instruction to existing history and regenerate.
         All safety gates remain in place — result is still in-memory only.
@@ -164,7 +166,7 @@ class ScaffoldingAgent:
         output_rate = 15.0 / 1_000_000  # $15 per M output tokens
         return round(input_tokens * input_rate + output_tokens * output_rate, 6)
 
-    def _run_ast_validation(self, result: Dict[str, Any]) -> None:
+    def _run_ast_validation(self, result: dict[str, Any]) -> None:
         """
         Run ast.parse() on every .py file in the result.
         Adds 'ast_check' field to each file_info dict: {'passed': bool, 'message': str}.
@@ -173,7 +175,7 @@ class ScaffoldingAgent:
             passed, msg = _ast_check(file_info["path"], file_info["content"])
             file_info["ast_check"] = {"passed": passed, "message": msg}
 
-    def _parse_json_response(self, text: str, estimated_cost: float) -> Dict[str, Any]:
+    def _parse_json_response(self, text: str, estimated_cost: float) -> dict[str, Any]:
         """Parse raw LLM response text into structured dictionary."""
         start_idx = text.find("{")
         end_idx = text.rfind("}")
@@ -196,7 +198,7 @@ class ScaffoldingAgent:
             doc_path = os.path.join(project_root, doc_name)
             if os.path.exists(doc_path):
                 try:
-                    with open(doc_path, "r", encoding="utf-8") as f:
+                    with open(doc_path, encoding="utf-8") as f:
                         text = f.read()
                         ctx_parts.append(f"--- {doc_name} ---\n{text[:1500]}")
                 except Exception:
@@ -205,7 +207,7 @@ class ScaffoldingAgent:
 
     def _generate_fallback_template(
         self, prompt_text: str, estimated_cost: float, note: str = "", model_context: str = ""
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Generate complete deterministic 8-file template project for offline execution or fallback.
         Files: models/classifier.py, requirements.txt, train.py, preprocess.py, Dockerfile,
@@ -530,7 +532,7 @@ tatva optimize models/model.onnx --target {target}
             "note": note,
         }
 
-    def write_to_disk(self, target_dir: str, files_data: List[Dict[str, str]]) -> List[str]:
+    def write_to_disk(self, target_dir: str, files_data: list[dict[str, str]]) -> list[str]:
         """
         STRICT SAFETY GATE: Writes files to target_dir ONLY when explicitly invoked by user click.
         Returns list of absolute file paths created.

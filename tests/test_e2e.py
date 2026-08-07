@@ -1,8 +1,10 @@
-import pytest
 import numpy as np
-from tatva.compiler import import_model, analyze_graph, TARGETS
+import pytest
+
+from tatva.compiler import TARGETS, analyze_graph, import_model
 from tatva.optimizer import select_fast_softmax_kernel
-from tatva.runner import establish_baseline, compile_model, run_and_measure, ExecutionEnvironment
+from tatva.runner import ExecutionEnvironment, compile_model, establish_baseline, run_and_measure
+
 
 @pytest.mark.integration
 def test_e2e_pipeline_verification(pretrained_model_path, skip_if_no_toolchain, tolerance, tmp_path):

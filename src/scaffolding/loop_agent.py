@@ -7,7 +7,8 @@ Executes iterative generation -> cross-compilation -> QEMU emulation -> parity c
 import os
 import shutil
 import tempfile
-from typing import Any, Callable, Dict, Optional
+from collections.abc import Callable
+from typing import Any
 
 from scaffolding.executor import ExecutionResult, ScaffoldingExecutor
 from scaffolding.llm_provider import LLMProvider
@@ -20,8 +21,8 @@ class LoopAgent:
 
     def __init__(
         self,
-        llm_provider: Optional[LLMProvider] = None,
-        executor: Optional[ScaffoldingExecutor] = None,
+        llm_provider: LLMProvider | None = None,
+        executor: ScaffoldingExecutor | None = None,
         max_attempts: int = 5,
     ) -> None:
         self.llm_provider = llm_provider or LLMProvider()
@@ -34,9 +35,9 @@ class LoopAgent:
         prompt_text: str,
         target: str = "RV64GCV",
         model_name: str = "Ollama: qwen2.5-coder (Local / Free)",
-        api_key: Optional[str] = None,
-        log_callback: Optional[Callable[[str], None]] = None,
-    ) -> Dict[str, Any]:
+        api_key: str | None = None,
+        log_callback: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
         """
         Execute closed-loop iterative build & verification cycle.
         Returns final structured result payload with 9-file workspace.
@@ -55,7 +56,7 @@ class LoopAgent:
                 prompt_text, target, model_name, api_key, log
             )
             current_attempt = 1
-            last_exec_result: Optional[ExecutionResult] = None
+            last_exec_result: ExecutionResult | None = None
 
             while current_attempt <= self.max_attempts:
                 log(f"\n🔄 [Attempt {current_attempt}/{self.max_attempts}] Writing workspace files to sandbox...")
@@ -161,7 +162,7 @@ class LoopAgent:
         stage: str,
         exec_res: ExecutionResult,
         prompt_text: str,
-        current_files: Dict[str, str],
+        current_files: dict[str, str],
     ) -> str:
         """Construct targeted diagnostic self-correction feedback prompt."""
         return (
@@ -178,10 +179,10 @@ class LoopAgent:
         self,
         fix_prompt: str,
         model_name: str,
-        api_key: Optional[str],
-        current_files: Dict[str, str],
-        log: Optional[Callable[[str], None]] = None,
-    ) -> Dict[str, str]:
+        api_key: str | None,
+        current_files: dict[str, str],
+        log: Callable[[str], None] | None = None,
+    ) -> dict[str, str]:
         """
         Query the LLM for corrected files.
 
@@ -217,7 +218,7 @@ class LoopAgent:
         _log(f"     Applied {len(files)} corrected file(s).")
         return current_files
 
-    def _write_files_to_dir(self, target_dir: str, files_dict: Dict[str, str]) -> None:
+    def _write_files_to_dir(self, target_dir: str, files_dict: dict[str, str]) -> None:
         root = os.path.realpath(target_dir)
         for rel_path, content in files_dict.items():
             abs_p = os.path.realpath(os.path.join(root, rel_path))
@@ -239,9 +240,9 @@ class LoopAgent:
         prompt_text: str,
         target: str,
         model_name: str = "",
-        api_key: Optional[str] = None,
-        log: Optional[Callable[[str], None]] = None,
-    ) -> tuple[Dict[str, str], str]:
+        api_key: str | None = None,
+        log: Callable[[str], None] | None = None,
+    ) -> tuple[dict[str, str], str]:
         """
         Generate the starting workspace from the user's prompt.
 
@@ -306,7 +307,7 @@ class LoopAgent:
         return files, "llm"
 
     @staticmethod
-    def _parse_workspace_payload(res_text: str) -> Optional[Dict[str, str]]:
+    def _parse_workspace_payload(res_text: str) -> dict[str, str] | None:
         """
         Pull {"files": [{"path", "content"}]} out of an LLM reply.
 
@@ -329,7 +330,7 @@ class LoopAgent:
         if not isinstance(entries, list) or not entries:
             return None
 
-        files: Dict[str, str] = {}
+        files: dict[str, str] = {}
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
@@ -345,7 +346,7 @@ class LoopAgent:
 
         return files or None
 
-    def _builtin_workspace_template(self, prompt_text: str, target: str) -> Dict[str, str]:
+    def _builtin_workspace_template(self, prompt_text: str, target: str) -> dict[str, str]:
         """The fixed 9-file starter project, used when no LLM is reachable."""
         return {
             "src/main.c": """\

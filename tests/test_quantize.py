@@ -2,8 +2,9 @@
 Tests for tatva model quantization and config comparison benchmarking.
 """
 
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 from tatva.compiler import TARGETS, import_model
 from tatva.optimizer import compare_configs, quantize

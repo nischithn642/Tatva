@@ -26,75 +26,81 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install Ruff
-        run: |
-          python -m pip install --upgrade pip
-          pip install ruff
+        run: pip install ruff
 
       - name: Run Ruff Lint
-        run: |
-          ruff check src/ tests/
+        run: ruff check src/ tests/
 
   unit-tests:
-    name: Unit Tests (Python ${{ matrix.python-version }})
+    name: Unit Tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
     needs: lint
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        # Must match `requires-python = ">=3.12"` in pyproject.toml. This used to test
+        # 3.10 and 3.11, which the package refuses to install on -- so those two legs
+        # had never actually run the suite.
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
-      - name: Cache Pip Dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-${{ matrix.python-version }}-
-
-      - name: Install Dependencies & Package
+      - name: Install TATVA and its test dependencies
+        # `pip install -e ".[dev]"` pulls the pinned apache-tvm / apache-tvm-ffi pair
+        # from pyproject. The old workflow hand-listed packages, omitted apache-tvm
+        # entirely (so every TVM-dependent unit test errored on import) and installed
+        # `anthropic`, which is not a dependency and which nothing in the suite uses.
         run: |
           python -m pip install --upgrade pip
-          pip install pytest numpy onnx onnxruntime anthropic click
-          pip install -e .
+          pip install -e ".[dev]"
 
       - name: Run Unit Test Suite
-        run: |
-          pytest -m unit -v
+        run: pytest -m unit -v
 
   integration-tests:
-    name: Full Integration & RISC-V QEMU Simulation (Optional)
-    if: github.event_name == 'workflow_dispatch'
+    name: Full Integration & RISC-V QEMU Simulation
+    needs: unit-tests
+    # Cross-compiling and emulating every fixture takes minutes; run it on demand and
+    # on pushes to the default branch rather than on every PR commit.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
-      - name: Install System Toolchain & Dependencies
+      - name: Install RISC-V toolchain and QEMU
+        # gcc-riscv64-unknown-elf provides riscv64-unknown-elf-gcc, which is one of the
+        # names tatva.runner.find_riscv_gcc looks for; qemu-system-misc provides
+        # qemu-system-riscv64 and qemu-system-riscv32.
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-system-misc gcc-riscv64-unknown-elf
-          python -m pip install --upgrade pip
-          pip install pytest numpy onnx onnxruntime anthropic click apache-tvm
-          pip install -e .
 
-      - name: Run Full Integration Tests
+      - name: Install TATVA and its test dependencies
         run: |
-          pytest -v
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Confirm the toolchain is visible to TATVA
+        run: tatva doctor
+
+      - name: Run Full Test Suite
+        run: pytest -v

@@ -25,20 +25,20 @@ from tatva.compiler import ModelIR, TargetVariant
 from tatva.diagnostics import CompilationError
 
 __all__ = [
+    "BaselineResult",
     "CompilationError",
     "CompiledArtifact",
     "ExecutionEnvironment",
     "MeasurementResult",
-    "BaselineResult",
     "compile_model",
-    "run_and_measure",
-    "reference_output",
-    "default_inputs_for",
     "default_input_array",
+    "default_inputs_for",
     "establish_baseline",
-    "verify_target",
-    "find_riscv_gcc",
     "find_qemu",
+    "find_riscv_gcc",
+    "reference_output",
+    "run_and_measure",
+    "verify_target",
 ]
 
 PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -382,9 +382,35 @@ class BaselineResult:
         self.target_logits = target_logits
 
 
+def _search_bin_dirs(install_name: str, legacy_dir: str) -> list[str]:
+    """
+    Directories to search for a toolchain binary, in priority order.
+
+    `tatva setup` installs into a per-user tools directory so that a pip-installed TATVA
+    and a git checkout share one copy. The legacy `<repo>/riscv-toolchain` and
+    `<repo>/qemu` paths are still searched so nobody who ran the old setup_env.py has to
+    re-download half a gigabyte.
+    """
+    from tatva.toolchain import tools_dir
+
+    return [
+        os.path.join(tools_dir(), install_name, "bin"),
+        os.path.join(PROJECT_DIR, legacy_dir, "bin"),
+    ]
+
+
+def _first_existing_exe(bin_dirs: list[str], exe_names: list[str]) -> str | None:
+    for bin_dir in bin_dirs:
+        for name in exe_names:
+            for candidate in (os.path.join(bin_dir, name + ".exe"), os.path.join(bin_dir, name)):
+                if os.path.isfile(candidate):
+                    return candidate
+    return None
+
+
 def find_riscv_gcc() -> tuple[str | None, str | None]:
     """
-    Find the RISC-V GCC cross-compiler binary on system PATH or in the local project directory.
+    Find the RISC-V GCC cross-compiler on PATH, in the tools directory, or in the repo.
     """
     candidates = ["riscv-none-elf-gcc", "riscv64-unknown-elf-gcc"]
     for name in candidates:
@@ -395,12 +421,9 @@ def find_riscv_gcc() -> tuple[str | None, str | None]:
         if path_exe:
             return name, path_exe
 
-    local_bin = os.path.join(PROJECT_DIR, "riscv-toolchain", "bin", "riscv-none-elf-gcc.exe")
-    if os.path.exists(local_bin):
-        return "riscv-none-elf-gcc", local_bin
-    local_bin_no_exe = os.path.join(PROJECT_DIR, "riscv-toolchain", "bin", "riscv-none-elf-gcc")
-    if os.path.exists(local_bin_no_exe):
-        return "riscv-none-elf-gcc", local_bin_no_exe
+    found = _first_existing_exe(_search_bin_dirs("riscv-none-elf-gcc", "riscv-toolchain"), candidates)
+    if found:
+        return "riscv-none-elf-gcc", found
 
     return None, None
 
@@ -417,12 +440,9 @@ def find_qemu(bitness: int = 64) -> tuple[str | None, str | None]:
     if path_exe:
         return name_prefix, path_exe
 
-    local_bin = os.path.join(PROJECT_DIR, "qemu", "bin", f"{name_prefix}.exe")
-    if os.path.exists(local_bin):
-        return name_prefix, local_bin
-    local_bin_no_exe = os.path.join(PROJECT_DIR, "qemu", "bin", name_prefix)
-    if os.path.exists(local_bin_no_exe):
-        return name_prefix, local_bin_no_exe
+    found = _first_existing_exe(_search_bin_dirs("qemu-riscv", "qemu"), [name_prefix])
+    if found:
+        return name_prefix, found
 
     return None, None
 
@@ -736,8 +756,8 @@ def verify_target(variant: TargetVariant) -> dict[str, Any]:
     Returns:
         dict: {"status": "ok"/"fail", "output": str, "error": str}
     """
-    gcc_name, gcc_path = find_riscv_gcc()
-    qemu_name, qemu_path = find_qemu(variant.bitness)
+    _gcc_name, gcc_path = find_riscv_gcc()
+    _qemu_name, qemu_path = find_qemu(variant.bitness)
 
     if not gcc_path:
         return {
@@ -875,9 +895,8 @@ def compile_model(
             arr = expr.data.numpy()
             for c in constants_list:
                 c_arr = c.data.numpy()
-                if c_arr.shape == arr.shape and c_arr.dtype == arr.dtype:
-                    if np.array_equal(c_arr, arr):
-                        return
+                if c_arr.shape == arr.shape and c_arr.dtype == arr.dtype and np.array_equal(c_arr, arr):
+                    return
             constants_list.append(expr)
         elif isinstance(expr, relax.Call):
             for arg in expr.args:
@@ -960,7 +979,12 @@ def compile_model(
         arr = const.data.numpy()
         dtype = str(arr.dtype)
 
-        def fmt(x):
+        # `dtype` is bound as a default so the closure captures this iteration's value
+        # rather than whatever the loop variable happens to be when it is called. It is
+        # only ever called inside this iteration today, but a late-binding closure over
+        # a loop variable is the kind of thing that quietly breaks the day someone makes
+        # this lazy.
+        def fmt(x, dtype=dtype):
             if "int64" in dtype:
                 return f"{x}LL"
             elif "int32" in dtype or "int8" in dtype or "uint8" in dtype or "int" in dtype:
@@ -980,10 +1004,7 @@ def compile_model(
         elif "uint8" in dtype:
             c_type = "uint8_t"
         else:
-            if "int" in dtype:
-                c_type = "int32_t"
-            else:
-                c_type = "float"
+            c_type = "int32_t" if "int" in dtype else "float"
 
         flat_data = arr.flatten()
         data_str = ", ".join(fmt(x) for x in flat_data)
@@ -1023,7 +1044,7 @@ def compile_model(
         )
     model_run_lines.append("")
 
-    for name, info in tensors_mapped.items():
+    for info in tensors_mapped.values():
         shape_str = ", ".join(str(x) for x in info["shape"]) or "1"
         model_run_lines.append(f"static int64_t shape_{info['cname']}[] = {{ {shape_str} }};")
 
@@ -1163,10 +1184,9 @@ def compile_model(
                     arr = arg.data.numpy()
                     for i, c in enumerate(constants_list):
                         c_arr = c.data.numpy()
-                        if c_arr.shape == arr.shape and c_arr.dtype == arr.dtype:
-                            if np.array_equal(c_arr, arr):
-                                const_idx = i
-                                break
+                        if c_arr.shape == arr.shape and c_arr.dtype == arr.dtype and np.array_equal(c_arr, arr):
+                            const_idx = i
+                            break
                     c_args.append(f"&tensor_constant_{const_idx}")
 
             c_args.append(f"&tensor_{tensors_mapped[binding.var.name_hint]['cname']}")
@@ -1345,7 +1365,7 @@ def run_and_measure(
             f"({artifact.elf_path}) directly to your physical RISC-V hardware board."
         )
 
-    qemu_name, qemu_path = find_qemu(artifact.variant.bitness)
+    _qemu_name, qemu_path = find_qemu(artifact.variant.bitness)
     if not qemu_path:
         raise FileNotFoundError(f"QEMU {artifact.variant.bitness}-bit emulator binary not found.")
 

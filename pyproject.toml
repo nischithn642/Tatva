@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tatva-compiler"
-version = "0.2.0"
+dynamic = ["version"]
 description = "TATVA: AI Model Compiler and Optimization Toolchain for RISC-V Processors"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -47,6 +47,9 @@ dev = [
 [project.scripts]
 tatva = "tatva.cli:cli"
 
+[tool.hatch.version]
+path = "src/tatva/__init__.py"
+
 [tool.hatch.build.targets.sdist]
 exclude = [
   "/.venv",
@@ -78,3 +81,25 @@ markers = [
 [tool.ruff]
 line-length = 120
 exclude = [".venv", "_backup", "scratch", "build", "dist", "website"]
+
+[tool.ruff.lint]
+# Pin the rule set explicitly. With no `select`, `ruff check` uses whatever that
+# version of ruff defaults to -- which changed under us and turned a clean tree into
+# 262 findings without a line of code being touched. CI should fail because the code
+# changed, not because the linter did.
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # import sorting
+    "B",    # bugbear: real bug patterns
+    "UP",   # pyupgrade: modern syntax for the Python we actually require
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff's own checks
+]
+ignore = [
+    # Broad `except Exception` is deliberate throughout: the CLI, the GUI workers and
+    # the diagnostics path all exist to degrade gracefully rather than traceback at a
+    # user. Where it matters the handler reports the exception rather than swallowing it.
+    "BLE001",
+    "E501",  # line length is enforced by the formatter, not by failing the build
+]

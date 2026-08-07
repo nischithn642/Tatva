@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -32,7 +32,7 @@ class ToolchainManager:
     """
 
     @staticmethod
-    def discover_gcc() -> Tuple[Optional[str], Optional[str]]:
+    def discover_gcc() -> tuple[str | None, str | None]:
         """
         Find a RISC-V cross-compiler.
 
@@ -40,10 +40,13 @@ class ToolchainManager:
         selected -- it would be invoked with -march=rv64gc* and fail in a confusing way.
         Host gcc is never a valid fallback for a RISC-V cross-compile.
         """
-        for exe in ("riscv-none-elf-gcc.exe", "riscv-none-elf-gcc"):
-            local_bin = os.path.join(PROJECT_DIR, "riscv-toolchain", "bin", exe)
-            if os.path.exists(local_bin):
-                return "riscv-none-elf-gcc", local_bin
+        from tatva.runner import _first_existing_exe, _search_bin_dirs
+
+        bundled = _first_existing_exe(
+            _search_bin_dirs("riscv-none-elf-gcc", "riscv-toolchain"), ["riscv-none-elf-gcc"]
+        )
+        if bundled:
+            return "riscv-none-elf-gcc", bundled
 
         candidates = [
             "riscv64-unknown-elf-gcc",
@@ -58,7 +61,7 @@ class ToolchainManager:
         return None, None
 
     @staticmethod
-    def discover_qemu(bitness: int = 64) -> Tuple[Optional[str], Optional[str]]:
+    def discover_qemu(bitness: int = 64) -> tuple[str | None, str | None]:
         """Find qemu-system-riscv64 or qemu-riscv64 binary."""
         candidates = [f"qemu-system-riscv{bitness}", f"qemu-riscv{bitness}"]
         for name in candidates:
@@ -69,19 +72,16 @@ class ToolchainManager:
             if path_exe:
                 return name, path_exe
 
-        # Check local project QEMU directory
-        local_bin = os.path.join(PROJECT_DIR, "qemu", "bin", f"qemu-system-riscv{bitness}.exe")
-        if os.path.exists(local_bin):
-            return f"qemu-system-riscv{bitness}", local_bin
+        from tatva.runner import _first_existing_exe, _search_bin_dirs
 
-        local_bin_no_exe = os.path.join(PROJECT_DIR, "qemu", "bin", f"qemu-system-riscv{bitness}")
-        if os.path.exists(local_bin_no_exe):
-            return f"qemu-system-riscv{bitness}", local_bin_no_exe
+        bundled = _first_existing_exe(_search_bin_dirs("qemu-riscv", "qemu"), candidates)
+        if bundled:
+            return f"qemu-system-riscv{bitness}", bundled
 
         return None, None
 
     @classmethod
-    def get_health_status(cls) -> Dict[str, Any]:
+    def get_health_status(cls) -> dict[str, Any]:
         """Return diagnostic health check for toolchain dependencies."""
         gcc_name, gcc_path = cls.discover_gcc()
         qemu_name, qemu_path = cls.discover_qemu()
@@ -166,7 +166,7 @@ class ScaffoldingExecutor:
 
     def compile_workspace(self, workspace_dir: str, target: str = "RV64GCV") -> ExecutionResult:
         """Cross-compile workspace files with the RISC-V toolchain."""
-        gcc_name, gcc_path = ToolchainManager.discover_gcc()
+        _gcc_name, gcc_path = ToolchainManager.discover_gcc()
         if not gcc_path:
             return ExecutionResult(
                 stage="compilation",
@@ -175,7 +175,8 @@ class ScaffoldingExecutor:
                 stdout="",
                 stderr=(
                     "No RISC-V cross-compiler found. Expected 'riscv-none-elf-gcc' on PATH or under "
-                    "'riscv-toolchain/bin/'. Run 'python setup_env.py' or 'tatva doctor'."
+                    "the TATVA tools directory. Run 'tatva setup' to install it, or 'tatva doctor' "
+                    "to see where TATVA looked."
                 ),
                 execution_time_ms=0.0,
             )
@@ -207,7 +208,7 @@ class ScaffoldingExecutor:
                     if f.endswith(".c"):
                         c_files.append(os.path.join(root, f))
             if c_files:
-                cmd = [gcc_path, "-O2", f"-I{inc_dir}"] + c_files + ["-o", out_elf]
+                cmd = [gcc_path, "-O2", f"-I{inc_dir}", *c_files, "-o", out_elf]
 
         return self.run_subprocess(cmd, cwd=workspace_dir, stage="compilation")
 
@@ -215,7 +216,7 @@ class ScaffoldingExecutor:
         """Emulate the cross-compiled ELF under QEMU system mode."""
         out_elf = os.path.join(workspace_dir, "build_app.elf")
         bitness = 32 if "32" in target else 64
-        qemu_name, qemu_path = ToolchainManager.discover_qemu(bitness)
+        _qemu_name, qemu_path = ToolchainManager.discover_qemu(bitness)
 
         if not qemu_path:
             return ExecutionResult(
@@ -224,8 +225,8 @@ class ScaffoldingExecutor:
                 return_code=127,
                 stdout="",
                 stderr=(
-                    f"qemu-system-riscv{bitness} not found. Expected on PATH or under 'qemu/bin/'. "
-                    "Run 'python setup_env.py' or 'tatva doctor'."
+                    f"qemu-system-riscv{bitness} not found on PATH or in the TATVA tools directory. "
+                    "Run 'tatva setup' to install it, or 'tatva doctor' to see where TATVA looked."
                 ),
                 execution_time_ms=0.0,
             )

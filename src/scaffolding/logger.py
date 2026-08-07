@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 import time
-from typing import Dict, Any, Optional
+from typing import Any
 
 PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -27,8 +27,8 @@ class ScaffoldingLogger:
         output_tokens: int,
         estimated_cost_usd: float,
         accepted_by_user: bool = False,
-        error: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        error: str | None = None,
+    ) -> dict[str, Any]:
         """
         Record a generation attempt to log file.
         """

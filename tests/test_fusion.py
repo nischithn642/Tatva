@@ -2,8 +2,9 @@
 Tests for tatva attention/softmax fusion optimization pass.
 """
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from tatva.compiler import TARGETS, import_model
 from tatva.optimizer import compare_configs, select_fast_softmax_kernel

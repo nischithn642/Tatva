@@ -637,7 +637,6 @@ wheels = [
 
 [[package]]
 name = "tatva-compiler"
-version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "apache-tvm" },
@@ -675,7 +674,7 @@ requires-dist = [
     { name = "pywebview", marker = "extra == 'gui'", specifier = ">=6.0.0" },
     { name = "ruff", marker = "extra == 'dev'" },
 ]
-provides-extras = ["gui", "dev"]
+provides-extras = ["dev", "gui"]
 
 [[package]]
 name = "typing-extensions"

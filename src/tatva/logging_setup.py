@@ -12,7 +12,6 @@ import json
 import logging
 import re
 import sys
-from typing import Optional
 
 from tatva.config import mask_secret
 
@@ -80,7 +79,7 @@ def get_logger(name: str) -> logging.Logger:
 def configure_logging(
     verbosity: int = 0,
     debug: bool = False,
-    log_file: Optional[str] = None,
+    log_file: str | None = None,
     json_log: bool = False,
 ) -> logging.Logger:
     """

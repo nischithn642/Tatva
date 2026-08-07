@@ -4,12 +4,11 @@ Command Line Interface for TATVA.
 
 import os
 import sys
-from typing import Any
+from typing import Any, NoReturn
 
 import click
 
 from tatva import __version__
-from tatva.config import get_anthropic_api_key
 from tatva._output import print_header, print_json, print_table
 from tatva.compiler import (
     DEFAULT_TARGET,
@@ -19,6 +18,7 @@ from tatva.compiler import (
     analyze_graph,
     import_model,
 )
+from tatva.config import get_anthropic_api_key
 from tatva.runner import (
     establish_baseline,
     find_qemu,
@@ -71,9 +71,14 @@ def cli(
     Provides commands to import, analyze, compile, optimize, and simulate
     Transformer models for bare-metal RISC-V targets.
     """
+    from tatva.config import load_dotenv_file
     from tatva.logging_setup import configure_logging
 
     configure_logging(verbosity=verbose, debug=debug, log_file=log_file, json_log=json_log)
+
+    # Before anything reads a key. Nothing used to load .env despite every error
+    # message telling people to put their key there.
+    load_dotenv_file()
 
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
@@ -86,17 +91,23 @@ def cli(
 
 def handle_cli_exception(
     e: Exception, debug: bool = False, json_format: bool = False
-) -> None:
+) -> NoReturn:
     """
-    Unified CLI Error Boundary.
-    Routes known exception categories through diagnostics.explain,
-    and handles unknown exceptions cleanly with helpful debug instructions.
+    Unified CLI error boundary. Always exits non-zero.
+
+    This existed and was never called: baseline-test, optimize and diagnose each had
+    their own near-copy, and two of them checked os.environ["ANTHROPIC_API_KEY"]
+    directly -- so a user who had set TATVA_ANTHROPIC_KEY was told to go set a key
+    they had already set.
     """
     from tatva.diagnostics import classify_failure, explain
     from tatva.logging_setup import get_logger
 
     logger = get_logger("cli")
-    logger.exception(e)
+    # exc_info is gated on --debug on purpose. This logger has a console handler, so
+    # logger.exception() here would dump a Python traceback at every user who mistyped
+    # a path -- the exact thing the friendly explanation below exists to replace.
+    logger.error("%s", e, exc_info=debug)
 
     context = classify_failure(e)
 
@@ -142,6 +153,18 @@ def handle_cli_exception(
         sys.exit(1)
 
 
+def _searched_paths(exe: str, install_name: str, legacy_dir: str) -> list[str]:
+    """
+    The places a toolchain binary is looked for, in order.
+
+    "not found" is not a useful diagnosis on its own -- the next question is always
+    "where did you look?", and until now the answer lived only in the source.
+    """
+    from tatva.runner import _search_bin_dirs
+
+    return ["PATH", *(os.path.join(d, exe) for d in _search_bin_dirs(install_name, legacy_dir))]
+
+
 @cli.command("doctor")
 @click.option("--json", "json_format", is_flag=True, help="Print machine-readable JSON status.")
 def doctor(json_format: bool) -> None:
@@ -160,7 +183,7 @@ def doctor(json_format: bool) -> None:
 
     # 2. Check TVM
     try:
-        import tvm  # type: ignore # noqa: F401
+        import tvm  # type: ignore
         status["tvm"] = {"status": "ok", "version": tvm.__version__}
     except ImportError:
         all_ok = False
@@ -172,7 +195,7 @@ def doctor(json_format: bool) -> None:
 
     # 3. Check ONNX Runtime
     try:
-        import onnxruntime  # type: ignore # noqa: F401
+        import onnxruntime  # type: ignore
         status["onnxruntime"] = {"status": "ok", "version": onnxruntime.__version__}
     except ImportError:
         all_ok = False
@@ -183,7 +206,7 @@ def doctor(json_format: bool) -> None:
         }
 
     # 4. Check RISC-V GCC compiler
-    gcc_name, gcc_path = find_riscv_gcc()
+    _gcc_name, gcc_path = find_riscv_gcc()
     if gcc_path:
         try:
             # Eagerly fetch version
@@ -205,11 +228,13 @@ def doctor(json_format: bool) -> None:
             "status": "error",
             "path": None,
             "version": None,
-            "error": "RISC-V GCC cross-compiler binary not found. See docs/TOOLCHAIN.md.",
+            "error": "RISC-V GCC cross-compiler binary not found. Run `tatva setup` to install it, "
+                     "or see docs/TOOLCHAIN.md to use your own.",
+            "searched": _searched_paths("riscv-none-elf-gcc", "riscv-none-elf-gcc", "riscv-toolchain"),
         }
 
     # 5. Check QEMU emulator
-    qemu_name, qemu_path = find_qemu(64)
+    _qemu_name, qemu_path = find_qemu(64)
     if qemu_path:
         try:
             import subprocess
@@ -230,7 +255,9 @@ def doctor(json_format: bool) -> None:
             "status": "error",
             "path": None,
             "version": None,
-            "error": "QEMU emulator binary not found. See docs/TOOLCHAIN.md.",
+            "error": "QEMU emulator binary not found. Run `tatva setup` to install it, "
+                     "or see docs/TOOLCHAIN.md to use your own.",
+            "searched": _searched_paths("qemu-system-riscv64", "qemu-riscv", "qemu"),
         }
 
     if json_format:
@@ -244,9 +271,94 @@ def doctor(json_format: bool) -> None:
             else:
                 click.echo(f"[ERROR] {tool} check failed!")
                 click.echo(f"  Reason: {info['error']}")
+                for location in info.get("searched", []):
+                    click.echo(f"  Looked in: {location}")
 
     if not all_ok:
         sys.exit(1)
+
+
+@cli.command("setup")
+@click.option(
+    "--component",
+    "-c",
+    type=click.Choice(["all", "gcc", "qemu"]),
+    default="all",
+    help="Which toolchain component to install.",
+)
+@click.option("--dry-run", is_flag=True, help="Show what would be downloaded and where, then stop.")
+@click.option("--force", is_flag=True, help="Reinstall even if the component is already present.")
+@click.option("--yes", "-y", is_flag=True, help="Do not prompt before downloading.")
+def setup(component: str, dry_run: bool, force: bool, yes: bool) -> None:
+    """
+    Install the pinned RISC-V cross-compiler and QEMU emulator.
+
+    Downloads prebuilt xPack binaries for this platform into a per-user tools directory
+    (override with TATVA_TOOLS_DIR). Already have your own toolchain on PATH? You do not
+    need this -- run `tatva doctor` to confirm TATVA can see it.
+
+    Usage Example:
+      tatva setup --dry-run
+      tatva setup --component qemu
+    """
+    from tatva.toolchain import (
+        ToolchainUnavailableError,
+        install_component,
+        plan_install,
+        tools_dir,
+    )
+
+    keys = ["gcc", "qemu"] if component == "all" else [component]
+
+    try:
+        plans = [plan_install(key) for key in keys]
+    except ToolchainUnavailableError as e:
+        click.secho(f"Error: {e}", fg="red", err=True)
+        sys.exit(1)
+
+    print_header("TATVA Toolchain Setup")
+    click.echo(f"Tools directory: {tools_dir()}\n")
+    for plan in plans:
+        click.echo(plan.describe())
+        click.echo("")
+
+    pending = [p for p in plans if force or not p.already_installed]
+    if not pending:
+        click.secho("Everything is already installed. Re-run with --force to reinstall.", fg="green")
+        return
+
+    total_mb = sum(p.component.approx_size_mb for p in pending)
+
+    if dry_run:
+        click.secho(f"Dry run: nothing downloaded. {len(pending)} component(s), ~{total_mb} MB.", fg="yellow")
+        return
+
+    # Downloading half a gigabyte is not something to do because someone typed a command
+    # they were guessing at.
+    if not yes and not click.confirm(f"Download and install {len(pending)} component(s) (~{total_mb} MB)?"):
+        click.echo("Aborted.")
+        sys.exit(1)
+
+    failures = []
+    for plan in pending:
+        click.secho(f"Installing {plan.component.label}...", fg="cyan")
+        try:
+            path = install_component(plan.component.key, force=force)
+            click.secho(f"  OK: {path}", fg="green")
+        except ToolchainUnavailableError as e:
+            failures.append((plan.component.key, str(e)))
+            click.secho(f"  FAILED: {e}", fg="red", err=True)
+
+    if failures:
+        click.secho(
+            f"\n{len(failures)} component(s) failed to install. "
+            "TATVA also accepts any riscv-none-elf-gcc and qemu-system-riscv64 on PATH.",
+            fg="red",
+            err=True,
+        )
+        sys.exit(1)
+
+    click.secho("\nDone. Run `tatva doctor` to confirm.", fg="green")
 
 
 @cli.command("targets")
@@ -428,6 +540,14 @@ def analyze(model_path: str, json_format: bool) -> None:
     is_flag=True,
     help="Show raw traceback for compilation/runtime failures.",
 )
+@click.option(
+    "--out",
+    "-o",
+    type=click.Path(),
+    default="BASELINE.md",
+    show_default=True,
+    help="Where to write the baseline report. Relative paths are resolved from the current directory.",
+)
 def baseline_test(
     model_path: str,
     allow_experimental: bool,
@@ -435,14 +555,14 @@ def baseline_test(
     json_format: bool,
     verbose: bool,
     debug: bool,
+    out: str,
 ) -> None:
     """
-    Establish a verified FP32 baseline in QEMU and generate BASELINE.md.
+    Establish a verified FP32 baseline in QEMU and generate a baseline report.
 
     Usage Example:
       tatva baseline-test models/model.onnx --target RV64GC
     """
-    from tatva.diagnostics import classify_failure, explain
 
     if verbose:
         click.echo(
@@ -452,28 +572,7 @@ def baseline_test(
     try:
         baseline_res = establish_baseline(model_path, target)
     except Exception as e:
-        if debug:
-            import traceback
-            traceback.print_exc()
-
-        context = classify_failure(e)
-        if json_format:
-            print_json(
-                {
-                    "status": "error",
-                    "error_type": context.error_type,
-                    "metadata": context.metadata,
-                }
-            )
-        else:
-            if not os.environ.get("ANTHROPIC_API_KEY"):
-                click.secho(
-                    "Note: Configure ANTHROPIC_API_KEY environment variable to retrieve richer, AI-generated Claude API explanations.",
-                    fg="cyan",
-                )
-            click.secho("\nDiagnostics Explanation:", fg="red", bold=True)
-            click.echo(explain(context))
-        sys.exit(1)
+        handle_cli_exception(e, debug=debug, json_format=json_format)
 
     latency = baseline_res.latency_result
 
@@ -506,8 +605,10 @@ def baseline_test(
         click.echo(f"  Median Latency: {latency.median_ms:.4f} ms")
         click.echo(f"  p95 Latency:    {latency.p95_ms:.4f} ms")
 
-    # Generate BASELINE.md in project root
-    baseline_md_path = os.path.join(PROJECT_DIR, "BASELINE.md")
+    # Write next to the user, not next to the source tree. PROJECT_DIR is derived from
+    # this file's location, so for a pip-installed wheel the report landed inside
+    # site-packages, where nobody would ever find it.
+    baseline_md_path = os.path.abspath(out)
     if verbose:
         click.echo(f"Writing baseline report markdown to {baseline_md_path}...")
 
@@ -540,7 +641,7 @@ def baseline_test(
 
 Out-of-box correctness was validated by performing host-side ONNX Runtime inference and comparing output logits against target-side RISC-V bare-metal output.
 
-* **Parity Check Output Status:** **PASS**
+* **Parity Check Output Status:** **{"PASS" if baseline_res.parity_passed else "FAIL"}**
 * **Allowed Tolerance Threshold:** `1e-4`
 * **Reference Host Logits (Top 5):** `{baseline_res.ref_logits}`
 * **RISC-V Bare-Metal Logits (Top 5):** `{baseline_res.target_logits}`
@@ -553,12 +654,15 @@ Out-of-box correctness was validated by performing host-side ONNX Runtime infere
 ```
 """
     try:
-        with open(baseline_md_path, "w") as f:
+        parent = os.path.dirname(baseline_md_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(baseline_md_path, "w", encoding="utf-8") as f:
             f.write(baseline_md_content)
-        if verbose:
-            click.echo("BASELINE.md generated successfully.")
+        if not json_format:
+            click.echo(f"\nBaseline report written to {baseline_md_path}")
     except Exception as e:
-        click.echo(f"Error writing BASELINE.md: {e}", err=True)
+        click.echo(f"Error writing baseline report to '{baseline_md_path}': {e}", err=True)
         sys.exit(1)
 
 
@@ -591,6 +695,12 @@ Out-of-box correctness was validated by performing host-side ONNX Runtime infere
     help="Output directory for optimized artifact.",
 )
 @click.option(
+    "--force",
+    "-f",
+    is_flag=True,
+    help="Replace --out if it already exists. Without this, an existing directory is an error.",
+)
+@click.option(
     "--debug",
     is_flag=True,
     help="Show raw traceback for compilation/runtime failures.",
@@ -601,6 +711,7 @@ def optimize(
     target: Any,
     passes: str,
     out: str,
+    force: bool,
     debug: bool,
 ) -> None:
     """
@@ -610,7 +721,8 @@ def optimize(
     """
     import json
     import shutil
-    from tatva.diagnostics import AccuracyDropError, classify_failure, explain
+
+    from tatva.diagnostics import AccuracyDropError
     from tatva.optimizer import compare_configs
 
     # 1. Parse and validate passes
@@ -633,14 +745,20 @@ def optimize(
             err=True,
         )
 
-    # 2. Check if output directory already exists to prevent silent overwrites
+    # 2. Never silently overwrite. Refusing was the right default; the missing half was
+    # any way to say yes, so the only way to re-run a build was to delete the directory
+    # by hand. --force does that for you, and says so.
     if os.path.exists(out):
-        click.secho(
-            f"Error: Output directory '{out}' already exists. Aborting to avoid overwrite.",
-            fg="red",
-            err=True,
-        )
-        sys.exit(1)
+        if not force:
+            click.secho(
+                f"Error: Output directory '{out}' already exists. "
+                f"Re-run with --force to replace it, or pass a different --out.",
+                fg="red",
+                err=True,
+            )
+            sys.exit(1)
+        click.secho(f"Replacing existing output directory '{out}' (--force).", fg="yellow", err=True)
+        shutil.rmtree(out, ignore_errors=True)
 
     # Print header
     print_header(f"TATVA Optimization: {os.path.basename(model_path)}")
@@ -665,19 +783,7 @@ def optimize(
                 details="Parity verification failed: MSE exceeds threshold.",
             )
     except Exception as e:
-        if debug:
-            import traceback
-            traceback.print_exc()
-
-        context = classify_failure(e)
-        if not get_anthropic_api_key():
-                click.secho(
-                    "Note: Configure TATVA_ANTHROPIC_KEY or ANTHROPIC_API_KEY environment variable to retrieve richer, AI-generated Claude API explanations.",
-                    fg="cyan",
-                )
-        click.secho("\nDiagnostics Explanation:", fg="red", bold=True)
-        click.echo(explain(context))
-        sys.exit(1)
+        handle_cli_exception(e, debug=debug)
 
     # Copy files to --out directory
     build_dir = res["results"]["optimized"]["build_dir"]
@@ -818,12 +924,13 @@ def diagnose(
     Can also accept a saved failure JSON report to re-explain it.
     """
     import json
+
     from tatva.diagnostics import DiagnosisContext, classify_failure, explain
 
     # Handle saved JSON reports directly
     if model_path.endswith(".json"):
         try:
-            with open(model_path, "r") as f:
+            with open(model_path) as f:
                 data = json.load(f)
 
             # Determine context
@@ -884,27 +991,7 @@ def diagnose(
         click.echo("No errors detected. Model compiled successfully.")
         sys.exit(0)
     except Exception as e:
-        if debug:
-            import traceback
-            traceback.print_exc()
-
-        context = classify_failure(e)
-        if json_format:
-            print_json(
-                {
-                    "error_type": context.error_type,
-                    "metadata": context.metadata,
-                }
-            )
-        else:
-            if not os.environ.get("ANTHROPIC_API_KEY"):
-                click.secho(
-                    "Note: Configure ANTHROPIC_API_KEY environment variable to retrieve richer, AI-generated Claude API explanations.",
-                    fg="cyan",
-                )
-            click.secho("\nDiagnostics Explanation:", fg="red", bold=True)
-            click.echo(explain(context))
-        sys.exit(1)
+        handle_cli_exception(e, debug=debug, json_format=json_format)
 
 
 @cli.command("validate")

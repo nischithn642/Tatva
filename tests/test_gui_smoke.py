@@ -6,7 +6,9 @@ target registry dropdown filtering, and widget event handlers without executing 
 heavy compilations.
 """
 
+import contextlib
 import tkinter as tk
+
 import pytest
 
 from tatva.compiler import DEFAULT_TARGET, TARGETS
@@ -29,10 +31,8 @@ def gui_app():
 
     yield app
 
-    try:
+    with contextlib.suppress(Exception):
         app.destroy()
-    except Exception:
-        pass
 
 
 @pytest.mark.unit
@@ -81,12 +81,15 @@ def test_gui_target_dropdown_population(gui_app) -> None:
     """
     Assert that target dropdown reflects TARGETS registry and experimental gating works.
     """
-    # Default state: allow_exp = False
+    # Default state: allow_exp = False. RV64GCV is behind the gate along with RV32EMC --
+    # codegen emits scalar C, so the vector extension is enabled in the ISA string and
+    # then never used. Offering it as a production target advertises a speedup that does
+    # not exist.
     gui_app.cb_allow_exp.set(False)
     gui_app._update_target_dropdown()
     values_default = gui_app.cbo_targets["values"]
     assert "RV64GC" in values_default
-    assert "RV64GCV" in values_default
+    assert not any("RV64GCV" in v for v in values_default)
     assert not any("RV32EMC" in v for v in values_default)
 
     # Gated state: allow_exp = True
@@ -94,7 +97,7 @@ def test_gui_target_dropdown_population(gui_app) -> None:
     gui_app._update_target_dropdown()
     values_exp = gui_app.cbo_targets["values"]
     assert "RV64GC" in values_exp
-    assert "RV64GCV" in values_exp
+    assert any("RV64GCV" in v for v in values_exp)
     assert any("RV32EMC" in v for v in values_exp)
 
 

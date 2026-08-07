@@ -8,9 +8,11 @@ Verifies:
 4. Verbosity level mapping (-v, -vv, --debug -> INFO, DEBUG).
 """
 
+import contextlib
 import logging
 import os
 import tempfile
+
 import pytest
 
 from tatva.diagnostics import MemoryLimitExceededError, UnsupportedOperatorError
@@ -28,19 +30,19 @@ def test_verbosity_logging_configuration() -> None:
     Assert that configure_logging sets the expected log levels.
     """
     logger = configure_logging(verbosity=0)
-    console_handler = [h for h in logger.handlers if isinstance(h, logging.StreamHandler)][0]
+    console_handler = next(h for h in logger.handlers if isinstance(h, logging.StreamHandler))
     assert console_handler.level == logging.WARNING
 
     logger_v = configure_logging(verbosity=1)
-    console_handler_v = [h for h in logger_v.handlers if isinstance(h, logging.StreamHandler)][0]
+    console_handler_v = next(h for h in logger_v.handlers if isinstance(h, logging.StreamHandler))
     assert console_handler_v.level == logging.INFO
 
     logger_vv = configure_logging(verbosity=2)
-    console_handler_vv = [h for h in logger_vv.handlers if isinstance(h, logging.StreamHandler)][0]
+    console_handler_vv = next(h for h in logger_vv.handlers if isinstance(h, logging.StreamHandler))
     assert console_handler_vv.level == logging.DEBUG
 
     logger_debug = configure_logging(debug=True)
-    console_handler_debug = [h for h in logger_debug.handlers if isinstance(h, logging.StreamHandler)][0]
+    console_handler_debug = next(h for h in logger_debug.handlers if isinstance(h, logging.StreamHandler))
     assert console_handler_debug.level == logging.DEBUG
 
 
@@ -68,7 +70,7 @@ def test_log_file_writing_and_secret_masking() -> None:
         for handler in logger.handlers:
             handler.flush()
 
-        with open(log_path, "r", encoding="utf-8") as f:
+        with open(log_path, encoding="utf-8") as f:
             log_contents = f.read()
 
         assert fake_anthropic_key not in log_contents
@@ -81,10 +83,8 @@ def test_log_file_writing_and_secret_masking() -> None:
             h.close()
             logger.removeHandler(h)
         if os.path.exists(log_path):
-            try:
+            with contextlib.suppress(OSError):
                 os.remove(log_path)
-            except OSError:
-                pass
 
 
 @pytest.mark.unit

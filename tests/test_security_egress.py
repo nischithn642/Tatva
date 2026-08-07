@@ -6,6 +6,7 @@ and safe centralized secret management.
 """
 
 import os
+
 import numpy as np
 import pytest
 
@@ -17,7 +18,7 @@ from tatva.config import (
     get_supabase_key,
     mask_secret,
 )
-from tatva.diagnostics import whitelist_payload, _sanitize_string
+from tatva.diagnostics import _sanitize_string, whitelist_payload
 
 
 @pytest.mark.unit

@@ -24,7 +24,9 @@ def test_import_onnx_success(skip_if_no_toolchain) -> None:
 
     report = analyze_graph(model_ir)
     assert report.total_ops > 0
-    assert "relax.nn.softmax" in report.op_histogram
+    # Op names are reported unprefixed, matching compiler.SUPPORTED_OPS.
+    assert "nn.softmax" in report.op_histogram
+    assert not any(name.startswith("relax.") for name in report.op_histogram), report.op_histogram
     assert report.has_transformer_bottleneck is True
     assert len(report.unsupported_ops) == 0
 

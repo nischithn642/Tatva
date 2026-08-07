@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="TATVA RISC-V Optimization Studio — Enterprise Deep-Tech Bare-Metal RISC-V Model Compiler & Schedule Optimizer.">
-  <title>TATVA RISC-V Optimization Studio v1.2.0-gemini</title>
+  <title>TATVA RISC-V Optimization Studio</title>
   
   <!-- Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -129,7 +129,9 @@
           <span class="text-[10px] text-[var(--text-secondary)] font-medium -mt-1">Optimization Studio</span>
         </div>
       </div>
-      <span id="build-badge" class="text-[10px] font-mono font-semibold bg-blue-500/10 text-[var(--accent-blue)] border border-blue-500/20 px-2 py-0.5 rounded-full">v1.2.0-gemini</span>
+      <!-- Placeholder only. The real version is filled in from tatva.__version__ by the
+           pywebviewready handler below; do not hardcode a number here. -->
+      <span id="build-badge" class="text-[10px] font-mono font-semibold bg-blue-500/10 text-[var(--accent-blue)] border border-blue-500/20 px-2 py-0.5 rounded-full">—</span>
     </div>
     
     <nav class="flex-1 py-4 flex flex-col gap-1 overflow-y-auto px-3">
@@ -181,7 +183,7 @@
           <i data-lucide="moon" class="w-3.5 h-3.5 text-[var(--text-primary)]"></i>
         </button>
       </div>
-      <p id="build-footer" class="text-[9px] font-mono text-[var(--text-secondary)] px-2 pt-2">v1.2.0-gemini · July 2026</p>
+      <p id="build-footer" class="text-[9px] font-mono text-[var(--text-secondary)] px-2 pt-2">TATVA</p>
     </div>
   </aside>
 
@@ -551,11 +553,11 @@
               <span class="w-2.5 h-2.5 rounded-full bg-green-500 inline-block"></span>
               <span class="ml-2 text-gray-300">tatva-terminal output stream</span>
             </div>
-            <span>v1.2.0-gemini</span>
+            <span id="terminal-version"></span>
           </div>
 
           <div id="terminal-stream" class="flex-1 min-h-[300px] overflow-y-auto pt-3 space-y-1.5 text-gray-300 leading-relaxed font-mono">
-            <p class="text-gray-500">=== TATVA RISC-V Optimization Studio v1.2.0-gemini ===</p>
+            <p class="text-gray-500">=== TATVA RISC-V Optimization Studio ===</p>
             <p class="text-gray-500">Ready. Select a target architecture and model file to launch pipeline.</p>
           </div>
         </div>
@@ -1059,8 +1061,11 @@
           const info = await window.pywebview.api.get_build_info();
           const badge = document.getElementById('build-badge');
           const footer = document.getElementById('build-footer');
+          const term = document.getElementById('terminal-version');
           if (badge) badge.innerText = info.version;
           if (footer) footer.innerText = info.label;
+          if (term) term.innerText = info.version;
+          document.title = 'TATVA RISC-V Optimization Studio ' + info.version;
         } catch (e) {}
       }
     });

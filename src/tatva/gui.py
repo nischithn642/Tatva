@@ -9,13 +9,15 @@ Provides a unified conversational interface & autonomous closed-loop engineering
   - Autonomous closed-loop self-correction engine (iterative GCC compile -> QEMU run -> parity verification -> auto-fix)
 """
 
+import contextlib
 import os
 import queue
 import sys
 import threading
 import tkinter as tk
+from collections.abc import Callable
 from tkinter import filedialog, messagebox, ttk
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
 # ── Ensure src/ is in sys.path for robust module imports ──────────────────────
 _CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -24,13 +26,16 @@ if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
 # ── Build Metadata ────────────────────────────────────────────────────────────
-BUILD_VERSION = "v1.2.0-gemini"
-BUILD_TIMESTAMP = "July 2026"
-BUILD_LABEL = f"{BUILD_VERSION} (Build {BUILD_TIMESTAMP})"
+# Read from the package rather than restated here. A hardcoded string in this file
+# is a string that goes stale the moment anyone bumps the real version.
+from tatva import __version__  # noqa: E402
+
+BUILD_VERSION = f"v{__version__}"
+BUILD_LABEL = BUILD_VERSION
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Deferred module containers (populated during splash screen)
-_backend: Dict[str, Any] = {}
+_backend: dict[str, Any] = {}
 
 
 def load_backend_libraries(callback: Any) -> None:
@@ -40,7 +45,7 @@ def load_backend_libraries(callback: Any) -> None:
     try:
         from tatva.compiler import DEFAULT_TARGET, TARGETS, analyze_graph, import_model
         from tatva.diagnostics import classify_failure, explain
-        from tatva.optimizer import compare_configs, select_fast_softmax_kernel, quantize
+        from tatva.optimizer import compare_configs, quantize, select_fast_softmax_kernel
         from tatva.runner import (
             ExecutionEnvironment,
             compile_model,
@@ -194,7 +199,7 @@ class TatvaApp(tk.Tk):
         self.geometry("1380x880")
         self.minsize(1080, 720)
 
-        self.model_path: Optional[str] = None
+        self.model_path: str | None = None
         self.imported_ir: Any = None
         self.graph_stats: Any = None
         self.cancel_requested = False
@@ -217,17 +222,13 @@ class TatvaApp(tk.Tk):
         That exception surfaced as an unhandled thread crash rather than anything
         actionable, so swallow exactly that case and let everything else through.
         """
-        try:
+        with contextlib.suppress(RuntimeError, tk.TclError):
             self.after(0, fn)
-        except (RuntimeError, tk.TclError):
-            pass
 
     def _configure_styles(self) -> None:
         style = ttk.Style(self)
-        try:
+        with contextlib.suppress(Exception):
             style.theme_use("clam")
-        except Exception:
-            pass
 
         # Gemini / Claude Modern Dark Color Palette
         bg_dark = "#131314"
@@ -604,7 +605,9 @@ class TatvaApp(tk.Tk):
             self.btn_sync_nv.config(state="disabled")
             self.btn_toggle_key.config(state="disabled")
             self.lbl_nv_status.config(text="")
-            models = ["Claude 3.5 Sonnet (Anthropic)", "Claude 3.5 Haiku (Anthropic)", "Claude 3 Opus (Anthropic)"]
+            from tatva.config import ANTHROPIC_MODEL_LABEL
+
+            models = [ANTHROPIC_MODEL_LABEL]
             self._all_models_cache = models
             self.cbo_llm_backend["values"] = models
             self.cbo_llm_backend.current(0)
@@ -725,7 +728,9 @@ class TatvaApp(tk.Tk):
             if models:
                 self.cbo_llm_backend.current(0)
         except Exception:
-            self.cbo_llm_backend["values"] = ["Claude 3.5 Sonnet (Anthropic)", "Ollama: qwen2.5-coder (Local)"]
+            from tatva.config import ANTHROPIC_MODEL_LABEL
+
+            self.cbo_llm_backend["values"] = [ANTHROPIC_MODEL_LABEL, "Ollama: qwen2.5-coder (Local)"]
             self.cbo_llm_backend.current(0)
 
 
@@ -1152,7 +1157,7 @@ class TatvaApp(tk.Tk):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_scaffold_generated(self, res: Dict[str, Any]) -> None:
+    def _on_scaffold_generated(self, res: dict[str, Any]) -> None:
         self.scaffolding_files_data = res.get("files", [])
         cost = res.get("cumulative_cost_usd", 0.0)
 
@@ -1230,15 +1235,15 @@ class TatvaApp(tk.Tk):
         self._append_chat_message("Assistant", f"⚡ Loaded scaffolded model into setup card: `{onnx_path}`.")
 
     # --- API Helper methods for tests & external callers ---
-    def validate_model_file(self, model_path: str) -> Dict[str, Any]:
+    def validate_model_file(self, model_path: str) -> dict[str, Any]:
         if not model_path or not os.path.exists(model_path):
             return {"valid": False, "error": f"Path not found: '{model_path}'"}
         return {"valid": True, "path": model_path, "filename": os.path.basename(model_path)}
 
-    def scan_hardware_boards(self) -> Dict[str, Any]:
+    def scan_hardware_boards(self) -> dict[str, Any]:
         return {"found": False, "status": "SIMULATION MODE — QEMU"}
 
-    def analyze_model(self, model_path: str) -> Dict[str, Any]:
+    def analyze_model(self, model_path: str) -> dict[str, Any]:
         return self._analyze_model() or {}
 
 
@@ -1277,15 +1282,15 @@ class TatvaPyBridge:
         except Exception:
             return ""
 
-    def select_model_file(self) -> Dict[str, Any]:
+    def select_model_file(self) -> dict[str, Any]:
         """Wrapper for selecting model file returning dict with path."""
         path = self.select_file()
         return {"path": path}
 
-    def get_build_info(self) -> Dict[str, str]:
+    def get_build_info(self) -> dict[str, str]:
         return {"version": BUILD_VERSION, "label": BUILD_LABEL}
 
-    def get_toolchain_health(self) -> Dict[str, Any]:
+    def get_toolchain_health(self) -> dict[str, Any]:
         try:
             from scaffolding.executor import ToolchainManager
             return ToolchainManager.get_health_status()
@@ -1304,7 +1309,7 @@ class TatvaPyBridge:
                 "error": f"Could not probe toolchain: {e}",
             }
 
-    def get_ollama_models(self) -> List[str]:
+    def get_ollama_models(self) -> list[str]:
         """Return models the local Ollama server actually reports. Empty if it is not running."""
         try:
             from scaffolding.llm_provider import get_local_ollama_models
@@ -1312,7 +1317,7 @@ class TatvaPyBridge:
         except Exception:
             return []
 
-    def fetch_nvidia_models(self, api_key: str = "") -> Dict[str, Any]:
+    def fetch_nvidia_models(self, api_key: str = "") -> dict[str, Any]:
         """Fetch live NVIDIA model catalog via PyBridge."""
         try:
             from scaffolding.llm_provider import fetch_nvidia_models
@@ -1323,12 +1328,12 @@ class TatvaPyBridge:
         except Exception as e:
             return {"success": False, "models": [], "error": f"Failed to fetch NVIDIA model catalog. Verify your nvapi-... key. ({e})"}
 
-    def get_nvidia_models(self, api_key: str = "") -> List[str]:
+    def get_nvidia_models(self, api_key: str = "") -> list[str]:
         """Return list of NVIDIA model IDs or empty list on failure."""
         res = self.fetch_nvidia_models(api_key)
         return res.get("models", [])
 
-    def ask_assistant(self, prompt: str, model_name: str = "", api_key: str = "") -> Dict[str, Any]:
+    def ask_assistant(self, prompt: str, model_name: str = "", api_key: str = "") -> dict[str, Any]:
         """
         Send a question to whichever LLM the user has actually configured.
 
@@ -1379,7 +1384,7 @@ class TatvaPyBridge:
         except Exception as e:
             return {"success": False, "reply": "", "error": str(e)}
 
-    def validate_model_file(self, model_path: str) -> Dict[str, Any]:
+    def validate_model_file(self, model_path: str) -> dict[str, Any]:
         if not model_path or not os.path.exists(model_path):
             return {"valid": False, "error": f"Path not found: '{model_path}'"}
         
@@ -1406,7 +1411,7 @@ class TatvaPyBridge:
         # Real op count / bottleneck detection, read straight from the ONNX graph.
         # Unknown stays unknown -- we do not invent a layer count.
         layer_count = "unknown"
-        has_bottleneck: Optional[bool] = None
+        has_bottleneck: bool | None = None
         parse_error = ""
         if ext == ".onnx":
             try:
@@ -1433,7 +1438,7 @@ class TatvaPyBridge:
             "error": parse_error,
         }
 
-    def verify_toolchain_configuration(self, target_name: str) -> Dict[str, Any]:
+    def verify_toolchain_configuration(self, target_name: str) -> dict[str, Any]:
         """Actually probe GCC and QEMU for the requested target."""
         try:
             from tatva.compiler import TARGETS
@@ -1466,10 +1471,10 @@ class TatvaPyBridge:
         except Exception as e:
             return {"status": "error", "error": f"Toolchain verification failed: {e}"}
 
-    def scan_hardware_boards(self) -> Dict[str, Any]:
+    def scan_hardware_boards(self) -> dict[str, Any]:
         return {"found": False, "status": "SIMULATION MODE — QEMU results only"}
 
-    def analyze_model(self, model_path: str) -> Dict[str, Any]:
+    def analyze_model(self, model_path: str) -> dict[str, Any]:
         if not os.path.exists(model_path):
             return {"error": f"File not found: {model_path}"}
         try:
@@ -1486,7 +1491,7 @@ class TatvaPyBridge:
         except Exception as e:
             return {"filename": os.path.basename(model_path), "error": f"Analysis failed: {e}"}
 
-    def run_pipeline(self, model_path: str, target_name: str, fuse_softmax: bool = True, do_quantize: bool = False) -> Dict[str, Any]:
+    def run_pipeline(self, model_path: str, target_name: str, fuse_softmax: bool = True, do_quantize: bool = False) -> dict[str, Any]:
         """
         Compile and measure BOTH the baseline and the optimized configuration under QEMU.
 
@@ -1497,7 +1502,7 @@ class TatvaPyBridge:
         if not model_path or not os.path.exists(model_path):
             return {"success": False, "error": f"Model file not found: '{model_path}'"}
 
-        passes: List[str] = []
+        passes: list[str] = []
         if fuse_softmax:
             passes.append("fuse")
         if do_quantize:
@@ -1568,7 +1573,7 @@ class TatvaPyBridge:
                 "status": "ERROR",
             }
 
-    def run_autonomous_loop(self, prompt_text: str, target_name: str, model_name: str) -> Dict[str, Any]:
+    def run_autonomous_loop(self, prompt_text: str, target_name: str, model_name: str) -> dict[str, Any]:
         try:
             from scaffolding.loop_agent import LoopAgent
             agent = LoopAgent()
@@ -1591,13 +1596,29 @@ def launch_gui() -> None:
     Application entry point launching PyWebView Edge WebView2 Desktop UI
     with fallback to Tkinter.
     """
+    from tatva.config import load_dotenv_file
+
+    load_dotenv_file()
+
     if getattr(sys, "frozen", False):
         base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
-        html_path = os.path.join(base_dir, "website", "index.html")
+        candidates = [os.path.join(base_dir, "website", "index.html")]
     else:
-        html_path = os.path.abspath(os.path.join(_CURRENT_DIR, "..", "..", "website", "index.html"))
-        if not os.path.exists(html_path):
-            html_path = os.path.abspath(os.path.join(_CURRENT_DIR, "..", "website", "index.html"))
+        candidates = [
+            # Installed wheel: pyproject force-includes `website` at `tatva/website`.
+            # This case was missing, so `pip install tatva-compiler && tatva gui` opened
+            # a file:// URL that did not exist and rendered a blank window.
+            os.path.join(_CURRENT_DIR, "website", "index.html"),
+            # Source checkout.
+            os.path.join(_CURRENT_DIR, "..", "..", "website", "index.html"),
+            os.path.join(_CURRENT_DIR, "..", "website", "index.html"),
+        ]
+
+    html_path = next((p for p in candidates if os.path.exists(p)), candidates[0])
+    if not os.path.exists(html_path):
+        raise FileNotFoundError(
+            "Could not find the GUI's index.html. Looked in:\n  " + "\n  ".join(os.path.abspath(p) for p in candidates)
+        )
 
     _normalized_html_path = os.path.abspath(html_path).replace(os.sep, "/")
     target_url = f"file:///{_normalized_html_path}"

@@ -9,10 +9,10 @@ and fallback to Anthropic Claude API.
 import json
 import urllib.error
 import urllib.request
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 
-def get_local_ollama_models(endpoint: str = "http://localhost:11434") -> List[str]:
+def get_local_ollama_models(endpoint: str = "http://localhost:11434") -> list[str]:
     """
     Query local Ollama server tags endpoint to fetch available models.
     Returns list of model names (e.g., ['qwen2.5-coder:32b', 'qwen2.5-coder:7b', 'deepseek-coder-v2']).
@@ -30,7 +30,7 @@ def get_local_ollama_models(endpoint: str = "http://localhost:11434") -> List[st
     return []
 
 
-def fetch_nvidia_models(api_key: Optional[str] = None) -> Tuple[List[str], Optional[str]]:
+def fetch_nvidia_models(api_key: str | None = None) -> tuple[list[str], str | None]:
     """
     Query live NVIDIA build.nvidia.com catalog endpoint /v1/models.
     Returns (model_ids, error_message).
@@ -84,15 +84,17 @@ class LLMProvider:
     def __init__(self, ollama_endpoint: str = "http://localhost:11434") -> None:
         self.ollama_endpoint = ollama_endpoint.rstrip("/")
 
-    def get_available_models(self, nvidia_key: Optional[str] = None) -> List[str]:
+    def get_available_models(self, nvidia_key: str | None = None) -> list[str]:
         """Return combined list of NVIDIA models, local Ollama models, and cloud API models."""
-        nvidia_models, err = fetch_nvidia_models(nvidia_key)
+        nvidia_models, _err = fetch_nvidia_models(nvidia_key)
         formatted_nvidia = [f"NVIDIA: {m}" for m in nvidia_models] if nvidia_models else []
 
         local_models = get_local_ollama_models(self.ollama_endpoint)
         formatted_local = [f"Ollama: {m} (Local / Free)" for m in local_models]
 
-        cloud_models = ["Claude 3.5 Sonnet (Anthropic)", "DeepSeek-R1 (Cloud)", "Custom Endpoint"]
+        from tatva.config import ANTHROPIC_MODEL_LABEL
+
+        cloud_models = [ANTHROPIC_MODEL_LABEL, "DeepSeek-R1 (Cloud)", "Custom Endpoint"]
 
         return formatted_nvidia + formatted_local + cloud_models
 
@@ -100,11 +102,11 @@ class LLMProvider:
         self,
         prompt: str,
         system_prompt: str,
-        messages: List[Dict[str, str]],
+        messages: list[dict[str, str]],
         model_name: str,
-        api_key: Optional[str] = None,
-        stream_callback: Optional[Any] = None,
-    ) -> Tuple[str, float]:
+        api_key: str | None = None,
+        stream_callback: Any | None = None,
+    ) -> tuple[str, float]:
         """
         Query specified model. Returns (response_text, cost_usd).
         """
@@ -138,8 +140,10 @@ class LLMProvider:
                 if not msgs_payload or msgs_payload[-1]["content"] != prompt:
                     msgs_payload.append({"role": "user", "content": prompt})
 
+                from tatva.config import ANTHROPIC_MODEL
+
                 response = client.messages.create(
-                    model="claude-3-5-sonnet-20241022",
+                    model=ANTHROPIC_MODEL,
                     max_tokens=4096,
                     system=system_prompt,
                     messages=msgs_payload,
@@ -150,7 +154,7 @@ class LLMProvider:
                 cost = round(in_tok * (3.0 / 1e6) + out_tok * (15.0 / 1e6), 6)
                 return text, cost
             except Exception as e:
-                raise RuntimeError(f"Anthropic API Error: {e}")
+                raise RuntimeError(f"Anthropic API Error: {e}") from e
 
         # Fallback note
         raise RuntimeError(f"No valid LLM provider configured for model '{model_name}'.")
@@ -159,10 +163,10 @@ class LLMProvider:
         self,
         prompt: str,
         system_prompt: str,
-        messages: List[Dict[str, str]],
+        messages: list[dict[str, str]],
         model_name: str,
         api_key: str,
-        stream_callback: Optional[Any] = None,
+        stream_callback: Any | None = None,
     ) -> str:
         """
         Post request to NVIDIA build.nvidia.com /v1/chat/completions with stream=True.
@@ -229,18 +233,18 @@ class LLMProvider:
                 raise RuntimeError(
                     "HTTP 429 Rate Limit Exceeded: NVIDIA API rate limit reached. "
                     "You can retry or switch back to local Ollama inference."
-                )
+                ) from e
             raise RuntimeError(
                 f"NVIDIA API Error (HTTP {e.code}): Failed to complete request. Verify your nvapi-... key."
-            )
+            ) from e
         except Exception as e:
-            raise RuntimeError(f"NVIDIA API Communication Error: {e}")
+            raise RuntimeError(f"NVIDIA API Communication Error: {e}") from e
 
     def _query_ollama(
         self,
         prompt: str,
         system_prompt: str,
-        messages: List[Dict[str, str]],
+        messages: list[dict[str, str]],
         model: str,
     ) -> str:
         """Post request to Ollama /api/generate or /api/chat endpoint."""

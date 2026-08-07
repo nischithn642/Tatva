@@ -3,7 +3,8 @@ Helper utilities for TATVA CLI output formatting.
 """
 
 import json
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 import click
 
@@ -26,7 +27,9 @@ def print_table(headers: Sequence[str], rows: Sequence[Sequence[Any]], col_width
     """
     Print a text table with consistent column widths.
     """
-    header_str = " | ".join(f"{h:<{w}}" for h, w in zip(headers, col_widths))
+    # strict=True: a header without a width (or vice versa) is a caller bug, and a
+    # silently truncated table header is a miserable way to find out about it.
+    header_str = " | ".join(f"{h:<{w}}" for h, w in zip(headers, col_widths, strict=True))
     click.echo(header_str)
 
     divider = "-" * (sum(col_widths) + 3 * (len(headers) - 1))
@@ -34,7 +37,7 @@ def print_table(headers: Sequence[str], rows: Sequence[Sequence[Any]], col_width
 
     for row in rows:
         formatted_row = []
-        for cell, width in zip(row, col_widths):
+        for cell, width in zip(row, col_widths, strict=False):
             # Check for click style components
             cell_str = str(cell)
             formatted_row.append(f"{cell_str:<{width}}")

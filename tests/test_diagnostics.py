@@ -2,12 +2,12 @@
 Tests for tatva diagnostics taxonomy, classification, security, and explanation layers.
 """
 
-import pytest
 import json
 import os
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
 
 from tatva.diagnostics import (
     AccuracyDropError,
@@ -108,9 +108,11 @@ def test_security_whitelist_and_no_weights() -> None:
 def test_claude_api_online_and_fallback(mock_urlopen: MagicMock) -> None:
     """
     Assert that when an API key is configured, explain queries the Claude API
-    with whitelisted metadata, using model claude-sonnet-4-6, and falls back
+    with whitelisted metadata, using the configured model, and falls back
     to offline explanations gracefully upon timeouts or connectivity failures.
     """
+    from tatva.config import ANTHROPIC_MODEL
+
     # 1. API Success Path
     mock_response = MagicMock()
     mock_response.read.return_value = json.dumps({
@@ -133,7 +135,7 @@ def test_claude_api_online_and_fallback(mock_urlopen: MagicMock) -> None:
 
         # Verify payload and requested model identifier
         req_data = json.loads(req.data.decode("utf-8"))
-        assert req_data["model"] == "claude-sonnet-4-6"
+        assert req_data["model"] == ANTHROPIC_MODEL
         assert "limit_bytes" in req_data["messages"][0]["content"]
 
     # 2. API Failure Path (graceful fallback offline)

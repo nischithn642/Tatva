@@ -79,6 +79,35 @@ def test_doctor_missing_qemu() -> None:
 
 
 @pytest.mark.unit
+def test_doctor_says_where_it_looked_for_a_missing_tool(tmp_path, monkeypatch) -> None:
+    """
+    "not found" invites the question "where did you look?". Answer it up front.
+    """
+    monkeypatch.setenv("TATVA_TOOLS_DIR", str(tmp_path / "tools"))
+
+    with patch("tatva.cli.find_riscv_gcc", return_value=(None, None)):
+        result = CliRunner().invoke(cli, ["doctor"])
+
+    assert result.exit_code == 1
+    assert "Looked in: PATH" in result.output
+    assert str(tmp_path / "tools") in result.output
+    assert "tatva setup" in result.output
+
+
+@pytest.mark.unit
+def test_doctor_json_carries_the_search_paths(tmp_path, monkeypatch) -> None:
+    """The same information has to reach anything parsing --json, not just humans."""
+    monkeypatch.setenv("TATVA_TOOLS_DIR", str(tmp_path / "tools"))
+
+    with patch("tatva.cli.find_qemu", return_value=(None, None)):
+        result = CliRunner().invoke(cli, ["doctor", "--json"])
+
+    searched = json.loads(result.output)["qemu"]["searched"]
+    assert searched[0] == "PATH"
+    assert any("qemu-system-riscv64" in entry for entry in searched[1:])
+
+
+@pytest.mark.unit
 def test_doctor_missing_tvm() -> None:
     """
     Assert friendly error report when tvm is missing.

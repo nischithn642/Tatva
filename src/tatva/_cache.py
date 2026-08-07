@@ -10,7 +10,7 @@ strings, and target architecture variants.
 import hashlib
 import os
 from collections import OrderedDict
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 
 class SessionCache:
@@ -23,7 +23,7 @@ class SessionCache:
         self.max_models = max_models
         self.max_artifacts = max_artifacts
         self._model_cache: OrderedDict[str, Any] = OrderedDict()
-        self._artifact_cache: OrderedDict[Tuple[str, str, str], Dict[str, Any]] = OrderedDict()
+        self._artifact_cache: OrderedDict[tuple[str, str, str], dict[str, Any]] = OrderedDict()
         self.hits = 0
         self.misses = 0
 
@@ -41,7 +41,7 @@ class SessionCache:
                 sha256_hash.update(byte_block)
         return sha256_hash.hexdigest()
 
-    def get_model_ir(self, file_path: str) -> Optional[Any]:
+    def get_model_ir(self, file_path: str) -> Any | None:
         """
         Retrieve cached ModelIR for a file if content SHA256 matches.
         """
@@ -73,7 +73,7 @@ class SessionCache:
         while len(self._model_cache) > self.max_models:
             self._model_cache.popitem(last=False)
 
-    def get_artifact(self, file_path: str, pass_config: str, target: str) -> Optional[Dict[str, Any]]:
+    def get_artifact(self, file_path: str, pass_config: str, target: str) -> dict[str, Any] | None:
         """
         Retrieve cached compilation artifact data if (file_hash, pass_config, target) matches.
         """
@@ -96,7 +96,7 @@ class SessionCache:
         return None
 
     def put_artifact(
-        self, file_path: str, pass_config: str, target: str, artifact_data: Dict[str, Any]
+        self, file_path: str, pass_config: str, target: str, artifact_data: dict[str, Any]
     ) -> None:
         """
         Cache compilation artifact metadata keyed by (file_hash, pass_config, target).
@@ -124,7 +124,7 @@ class SessionCache:
         self.hits = 0
         self.misses = 0
 
-    def stats(self) -> Dict[str, int]:
+    def stats(self) -> dict[str, int]:
         """
         Return current cache metrics.
         """

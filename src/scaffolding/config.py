@@ -4,26 +4,55 @@ Configuration management for the Project Scaffolding Assistant.
 
 import json
 import os
-from dataclasses import dataclass, field
-from typing import Dict, List
+from dataclasses import dataclass, field, fields
 
-PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-CONFIG_PATH = os.path.join(PROJECT_DIR, "config", "scaffolding_config.json")
+from tatva.config import ANTHROPIC_MODEL_LABEL
+
+
+def _config_path() -> str:
+    """
+    Where the user's scaffolding preferences live.
+
+    Not in the repo. The old location was `<project>/config/scaffolding_config.json`,
+    which was committed to git *and* written back by save() -- so the first person to
+    type their NVIDIA key into the GUI had it staged for their next commit. It also
+    resolves inside site-packages for an installed wheel, which is not writable on most
+    systems. TATVA_CONFIG_DIR overrides.
+    """
+    root = os.environ.get("TATVA_CONFIG_DIR")
+    if not root:
+        base = (
+            os.environ.get("APPDATA")
+            or os.environ.get("XDG_CONFIG_HOME")
+            or os.path.join(os.path.expanduser("~"), ".config")
+        )
+        root = os.path.join(base, "tatva")
+    return os.path.join(root, "scaffolding_config.json")
+
+
+# Snapshot for anything that wants to show the user where the file lives. load() and
+# save() deliberately call _config_path() again rather than using this, because a path
+# frozen at import time ignores TATVA_CONFIG_DIR set later -- which is how the test
+# suite ended up writing into the developer's real %APPDATA% and then reading its own
+# leftovers back on the next run.
+CONFIG_PATH = _config_path()
 
 
 @dataclass
 class ScaffoldingConfig:
     provider: str = "NVIDIA NIM"
+    # Session-only. Never written to disk by save(); read from the environment via
+    # get_nvidia_api_key() when it is blank.
     nvidia_api_key: str = ""
     selected_model: str = ""
-    default_model: str = "Claude 3.5 Sonnet (Anthropic)"
-    models: List[str] = field(default_factory=lambda: [
-        "Claude 3.5 Sonnet (Anthropic)",
+    default_model: str = ANTHROPIC_MODEL_LABEL
+    models: list[str] = field(default_factory=lambda: [
+        ANTHROPIC_MODEL_LABEL,
         "DeepSeek-R1 (Local/API)",
         "Custom Endpoint"
     ])
-    cost_rates_per_1k_chars: Dict[str, float] = field(default_factory=lambda: {
-        "Claude 3.5 Sonnet (Anthropic)": 0.003,
+    cost_rates_per_1k_chars: dict[str, float] = field(default_factory=lambda: {
+        ANTHROPIC_MODEL_LABEL: 0.003,
         "DeepSeek-R1 (Local/API)": 0.0005,
         "Custom Endpoint": 0.001
     })
@@ -36,23 +65,33 @@ class ScaffoldingConfig:
 
     @classmethod
     def load(cls) -> "ScaffoldingConfig":
-        if os.path.exists(CONFIG_PATH):
+        path = _config_path()
+        if os.path.exists(path):
             try:
-                with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                with open(path, encoding="utf-8") as f:
                     data = json.load(f)
-                return cls(**data)
+                # Ignore keys this dataclass no longer has rather than raising TypeError
+                # and silently resetting every preference the user set.
+                known = {f.name for f in fields(cls)}
+                return cls(**{k: v for k, v in data.items() if k in known})
             except Exception:
                 return cls()
         return cls()
 
     def save(self) -> None:
-        """Persist configuration settings to disk."""
+        """
+        Persist preferences to disk.
+
+        Deliberately does not write nvidia_api_key. A secret in a JSON file is a secret
+        that gets committed, backed up and shared; the key belongs in the environment
+        (TATVA_NVIDIA_KEY / NVIDIA_API_KEY) or in the session only.
+        """
+        path = _config_path()
         try:
-            os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
                 json.dump({
                     "provider": self.provider,
-                    "nvidia_api_key": self.nvidia_api_key,
                     "selected_model": self.selected_model,
                     "default_model": self.default_model,
                     "models": self.models,

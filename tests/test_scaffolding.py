@@ -3,11 +3,13 @@ Unit and Safety Gate Tests for Project Scaffolding Assistant Experimental Module
 """
 
 import json
+
 import pytest
 
 from scaffolding.agent import ScaffoldingAgent
 from scaffolding.config import ScaffoldingConfig
 from scaffolding.logger import ScaffoldingLogger
+from tatva.config import ANTHROPIC_MODEL_LABEL
 
 
 @pytest.mark.unit
@@ -16,8 +18,8 @@ def test_scaffolding_config_load() -> None:
     Assert that ScaffoldingConfig loads defaults and computes token cost estimates correctly.
     """
     cfg = ScaffoldingConfig.load()
-    assert cfg.default_model == "Claude 3.5 Sonnet (Anthropic)"
-    assert "Claude 3.5 Sonnet (Anthropic)" in cfg.models
+    assert cfg.default_model == ANTHROPIC_MODEL_LABEL
+    assert ANTHROPIC_MODEL_LABEL in cfg.models
 
     prompt = "Keyword spotter model for RV64GCV"
     cost = cfg.estimate_cost(prompt, cfg.default_model)
@@ -107,7 +109,7 @@ def test_audit_logger(tmp_path) -> None:
     assert entry["accepted_by_user"] is True
     assert log_file.exists()
 
-    with open(log_file, "r") as f:
+    with open(log_file) as f:
         lines = f.readlines()
         assert len(lines) == 1
         data = json.loads(lines[0])

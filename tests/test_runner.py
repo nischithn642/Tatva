@@ -20,8 +20,8 @@ def test_compile_and_measure_e2e(skip_if_no_toolchain) -> None:
     Assert that we can compile and run a model under QEMU system mode
     and get deterministic simulated latency measurements.
     """
-    gcc_name, gcc_path = find_riscv_gcc()
-    qemu_name, qemu_path = find_qemu(64)
+    _gcc_name, gcc_path = find_riscv_gcc()
+    _qemu_name, qemu_path = find_qemu(64)
 
     if not gcc_path or not qemu_path:
         pytest.skip("Skipping runner e2e test because GCC or QEMU-64 is missing.")

@@ -3,6 +3,7 @@ Tests for tatva optimize CLI command.
 """
 
 import os
+
 from click.testing import CliRunner
 
 from tatva.cli import cli
@@ -99,4 +100,28 @@ def test_optimize_already_exists(tmp_path) -> None:
 
     assert result.exit_code != 0
     assert "Error: Output directory" in result.output
-    assert "already exists. Aborting to avoid overwrite." in result.output
+    assert "Re-run with --force to replace it" in result.output
+
+
+def test_optimize_force_replaces_existing_output(tmp_path) -> None:
+    """
+    Assert --force replaces an existing --out directory instead of aborting.
+
+    The refusal above is correct, but before --force existed the only way past it was
+    to delete the directory by hand, so re-running a build was a two-step chore.
+    """
+    runner = CliRunner()
+    out_dir = tmp_path / "force_me"
+    out_dir.mkdir()
+    stale = out_dir / "stale.txt"
+    stale.write_text("output from a previous run")
+
+    result = runner.invoke(
+        cli,
+        ["optimize", "models/model.onnx", "--target", "RV64GC", "--passes", "fuse", "--out", str(out_dir), "--force"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert os.path.exists(os.path.join(str(out_dir), "model.elf"))
+    # The directory was replaced, not merged into.
+    assert not stale.exists()

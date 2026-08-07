@@ -5,7 +5,7 @@ Holds the INT8 quantization transform on Relax IRModules, the optimized-softmax
 kernel selection pass, and the configuration comparison benchmark.
 """
 
-from typing import Any, List
+from typing import Any
 
 import numpy as np
 
@@ -99,7 +99,9 @@ def calibrate_activation_scale(
         return FALLBACK_ACTIVATION_SCALE, f"fallback (calibration run failed: {e})"
 
     magnitudes: list[np.ndarray] = []
-    for name, arr in zip(out_names, outputs):
+    # strict=False: onnxruntime returns one array per declared output, but pairing them
+    # up is best-effort calibration -- a mismatch should skip a tensor, not abort the run.
+    for name, arr in zip(out_names, outputs, strict=False):
         if name not in wanted:
             continue
         arr = np.asarray(arr)
@@ -199,10 +201,7 @@ def quantize(model_ir: ModelIR, activation_scale: float | None = None) -> ModelI
                 # A non-constant right-hand side (batched attention matmul) has no
                 # values to measure here, so it falls back to the activation scale --
                 # both sides of that product are activations anyway.
-                if isinstance(arg1, relax.Constant):
-                    wt_scale = _weight_scale(arg1.data.numpy())
-                else:
-                    wt_scale = act_scale
+                wt_scale = _weight_scale(arg1.data.numpy()) if isinstance(arg1, relax.Constant) else act_scale
                 weight_scales.append(wt_scale)
 
                 scale1 = relax.const(wt_scale, "float32")
@@ -329,7 +328,7 @@ fuse_attention_softmax = select_fast_softmax_kernel
 
 
 def compare_configs(
-    onnx_path: str, variant: TargetVariant, configs: List[str], passes: List[str] = None
+    onnx_path: str, variant: TargetVariant, configs: list[str], passes: list[str] | None = None
 ) -> dict[str, Any]:
     """
     Compare baseline (FP32) and optimized models on the same imported model instance.

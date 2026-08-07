@@ -15,10 +15,10 @@ ENV/
 node_modules/
 
 # --- Packaging / build output ---
+# `build_*/` rather than an ever-growing list of specific names: `tatva optimize --out`
+# takes an arbitrary directory, and every one of those directories is regenerable.
 build/
-build_opt/
-build_e2e/
-build_opt_quickstart/
+build_*/
 dist/
 develop-eggs/
 downloads/
@@ -40,8 +40,15 @@ model_info.h
 operators.c
 
 # --- Scratch: keep the helper scripts, drop the generated build dirs ---
-scratch/tatva_build_*/
+# scratch/val_build_* used to be committed: 497 copied TVM headers, 75% of every
+# clone, for build output that any `tatva optimize` run regenerates. The *_build_*
+# glob covers whatever the next helper script decides to name its output directory.
+scratch/*_build_*/
 scratch/*.elf
+scratch/*.bin
+
+# --- Local LLM settings: save() writes the user's API key into this file ---
+config/scaffolding_config.json
 
 # --- Secrets (.env.example IS tracked; it is the template) ---
 .env
@@ -51,9 +58,13 @@ scratch/*.elf
 _backup/
 logs/*.log
 
-# --- Bundled toolchains: too large for git, fetched by setup_env.py ---
+# --- Bundled toolchains: too large for git, fetched by `tatva setup` ---
+# `tatva setup` now installs to a per-user directory outside the repo. These two are
+# the legacy in-repo locations that the old setup_env.py used; still ignored so an
+# existing checkout does not suddenly offer half a gigabyte of binaries for commit.
 qemu/
 riscv-toolchain/
+renode/
 
 # --- Large model fixtures: small ones are tracked, these are not ---
 models/model_pretrained.onnx

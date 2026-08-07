@@ -8,7 +8,7 @@ and local rule-based fallback diagnostics when offline.
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any
 
 from tatva.config import get_anthropic_api_key
 
@@ -78,7 +78,7 @@ class ImportInProgressError(Exception):
 class DiagnosisContext:
     """Carries structured metadata context for generating user-facing diagnoses."""
     error_type: str
-    metadata: Dict[str, Any]
+    metadata: dict[str, Any]
 
 
 def classify_failure(exception_or_result: Any) -> DiagnosisContext:
@@ -129,7 +129,7 @@ def classify_failure(exception_or_result: Any) -> DiagnosisContext:
         msg = str(exception_or_result)
         if "Memory limit exceeded" in msg:
             nums = [int(n) for n in re.findall(r"(\d+) bytes", msg)]
-            metadata: Dict[str, Any] = {"details": msg}
+            metadata: dict[str, Any] = {"details": msg}
             if len(nums) >= 2:
                 metadata["limit_bytes"], metadata["required_bytes"] = nums[0], nums[1]
             return DiagnosisContext(error_type="memory_limit_exceeded", metadata=metadata)
@@ -171,7 +171,7 @@ def _sanitize_string(val: str) -> str:
     return val
 
 
-def whitelist_payload(error_type: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+def whitelist_payload(error_type: str, metadata: dict[str, Any]) -> dict[str, Any]:
     """
     Enforce security gating. Filter metadata to ensure only whitelisted fields
     ever leave the local machine to the external Claude API.
@@ -200,10 +200,13 @@ def whitelist_payload(error_type: str, metadata: Dict[str, Any]) -> Dict[str, An
                 whitelisted[k] = _sanitize_string(val)
             elif isinstance(val, (int, float, bool)):
                 whitelisted[k] = val
-            elif isinstance(val, (list, tuple)):
-                # Allow small primitive lists only (e.g., shape bounds under 16 items)
-                if len(val) <= 16 and all(isinstance(x, (int, float, str, bool)) for x in val):
-                    whitelisted[k] = [_sanitize_string(x) if isinstance(x, str) else x for x in val]
+            # Allow small primitive lists only (e.g., shape bounds under 16 items)
+            elif (
+                isinstance(val, (list, tuple))
+                and len(val) <= 16
+                and all(isinstance(x, (int, float, str, bool)) for x in val)
+            ):
+                whitelisted[k] = [_sanitize_string(x) if isinstance(x, str) else x for x in val]
 
     return whitelisted
 
@@ -319,8 +322,10 @@ def explain(context: DiagnosisContext) -> str:
         "Provide only the diagnostic description and recommended mitigation steps."
     )
 
+    from tatva.config import ANTHROPIC_MODEL
+
     data = {
-        "model": "claude-sonnet-4-6",
+        "model": ANTHROPIC_MODEL,
         "max_tokens": 1024,
         "messages": [{"role": "user", "content": prompt}],
     }

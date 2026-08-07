@@ -6,7 +6,41 @@ Ensures secrets are never hardcoded, logged, or leaked into error payloads.
 """
 
 import os
-from typing import Optional
+from pathlib import Path
+
+# One place for the Anthropic model id. It was previously written out three times --
+# "claude-sonnet-4-6" in diagnostics and "claude-3-5-sonnet-20241022" twice in
+# scaffolding -- and the first of those is not a model that exists, so every
+# diagnostics call that actually had an API key silently 404'd into the offline path.
+ANTHROPIC_MODEL = "claude-sonnet-5"
+
+# Human-facing label for the same model, shown in the GUI's provider dropdown.
+ANTHROPIC_MODEL_LABEL = "Claude Sonnet 5 (Anthropic)"
+
+
+def load_dotenv_file(start: str | None = None) -> str | None:
+    """
+    Load a `.env` from the working directory or any parent, if one exists.
+
+    SecretMissingError has always told people to "set it in your environment or .env
+    file", and python-dotenv has always been a declared dependency -- but nothing ever
+    read the file, so the second half of that sentence was a lie. Existing environment
+    variables win; a .env never overrides what the shell already set.
+
+    Returns the path loaded, or None.
+    """
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return None
+
+    here = Path(start or os.getcwd()).resolve()
+    for directory in [here, *here.parents]:
+        candidate = directory / ".env"
+        if candidate.is_file():
+            load_dotenv(candidate, override=False)
+            return str(candidate)
+    return None
 
 
 class SecretMissingError(Exception):
@@ -24,7 +58,7 @@ class SecretMissingError(Exception):
         self.key_name = key_name
 
 
-def mask_secret(secret_val: Optional[str]) -> str:
+def mask_secret(secret_val: str | None) -> str:
     """
     Safely mask a secret string for debugging without revealing its full contents.
     Example: 'sk-ant-1234567890abcdef' -> 'sk-a***cdef'
@@ -39,10 +73,10 @@ def mask_secret(secret_val: Optional[str]) -> str:
 
 def get_secret(
     key_name: str,
-    default: Optional[str] = None,
+    default: str | None = None,
     required: bool = False,
     usage_context: str = "",
-) -> Optional[str]:
+) -> str | None:
     """
     Retrieve a secret environment variable cleanly.
 
@@ -67,7 +101,7 @@ def get_secret(
     return val
 
 
-def get_anthropic_api_key(required: bool = False) -> Optional[str]:
+def get_anthropic_api_key(required: bool = False) -> str | None:
     """
     Retrieve Anthropic Claude API Key from TATVA_ANTHROPIC_KEY or ANTHROPIC_API_KEY.
     """
@@ -80,7 +114,7 @@ def get_anthropic_api_key(required: bool = False) -> Optional[str]:
     return key
 
 
-def get_resend_api_key(required: bool = False) -> Optional[str]:
+def get_resend_api_key(required: bool = False) -> str | None:
     """
     Retrieve Resend API Key for website contact notifications.
     """
@@ -91,7 +125,7 @@ def get_resend_api_key(required: bool = False) -> Optional[str]:
     )
 
 
-def get_supabase_key(required: bool = False) -> Optional[str]:
+def get_supabase_key(required: bool = False) -> str | None:
     """
     Retrieve Supabase Service Role Key for backend storage operations.
     """
@@ -102,7 +136,7 @@ def get_supabase_key(required: bool = False) -> Optional[str]:
     )
 
 
-def get_nvidia_api_key(required: bool = False) -> Optional[str]:
+def get_nvidia_api_key(required: bool = False) -> str | None:
     """
     Retrieve NVIDIA API Key from TATVA_NVIDIA_KEY or NVIDIA_API_KEY.
     """
