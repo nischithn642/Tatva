@@ -19,6 +19,14 @@ def pretrained_model_path() -> Path:
     return Path("models/model_pretrained.onnx")
 
 @pytest.fixture
+def mlp_model_path() -> Path:
+    """
+    A non-transformer fixture: one float32 input, an ONNX name that is not a valid
+    C identifier, and no softmax. Regenerate with `python models/make_mlp_fixture.py`.
+    """
+    return Path("models/model_mlp.onnx")
+
+@pytest.fixture
 def tolerance() -> float:
     return 0.05
 

@@ -1022,12 +1022,13 @@ class TatvaApp(tk.Tk):
                     target_logits = [float(x) for x in parts]
                     break
 
+            # Accuracy is measured against the host reference, not the QEMU baseline.
             mse = 0.0
-            if target_logits and baseline_res.target_logits:
-                min_l = min(len(target_logits), len(baseline_res.target_logits))
+            if target_logits and baseline_res.ref_logits:
+                min_l = min(len(target_logits), len(baseline_res.ref_logits))
                 import numpy as np
 
-                mse = float(np.mean((np.array(target_logits[:min_l]) - np.array(baseline_res.target_logits[:min_l])) ** 2))
+                mse = float(np.mean((np.array(target_logits[:min_l]) - np.array(baseline_res.ref_logits[:min_l])) ** 2))
 
             self.after(
                 0,

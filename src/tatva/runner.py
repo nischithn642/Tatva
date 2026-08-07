@@ -8,6 +8,7 @@ target architecture verification gates and performance measurements.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -17,6 +18,28 @@ from typing import Any
 import numpy as np
 
 from tatva.compiler import ModelIR, TargetVariant
+
+# Single shared exception type. There used to be a second, unrelated CompilationError
+# defined here, which meant diagnostics.classify_failure() never recognised the errors
+# the runner actually raised and always fell through to the generic branch.
+from tatva.diagnostics import CompilationError
+
+__all__ = [
+    "CompilationError",
+    "CompiledArtifact",
+    "ExecutionEnvironment",
+    "MeasurementResult",
+    "BaselineResult",
+    "compile_model",
+    "run_and_measure",
+    "reference_output",
+    "default_inputs_for",
+    "default_input_array",
+    "establish_baseline",
+    "verify_target",
+    "find_riscv_gcc",
+    "find_qemu",
+]
 
 PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -104,14 +127,19 @@ int main(void) {
 }
 """
 
-# C Driver for model inference benchmarking inside QEMU system-mode
+# C Driver for model inference benchmarking inside QEMU system-mode.
+#
+# The input buffers, their types and the call signature are NOT fixed: they are
+# generated from the model's own graph inputs by `compile_model`, which fills in
+# the @TATVA_*@ markers below. Hardcoding a tensor list here would silently limit
+# TATVA to models that happen to look like BERT.
 MAIN_C_BENCHMARK = """
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "model_info.h"
 
-extern int32_t tvmgen_default_run(void* input_ids, void* attention_mask, void* token_type_ids, void* output);
+extern int32_t tvmgen_default_run(@TATVA_RUN_PARAMS@);
 
 static inline uint64_t read_cycles(void) {
     uint64_t cycles;
@@ -195,44 +223,38 @@ void sbi_shutdown(void) {
     asm volatile ("ecall" : : "r"(a0), "r"(a1), "r"(a6), "r"(a7) : "memory");
 }
 
-static int64_t input_ids[32];
-static int64_t attention_mask[32];
-static int64_t token_type_ids[32];
-static float output_logits[OUTPUT_SIZE];
+@TATVA_IO_BUFFERS@
 
 int main(void) {
     sbi_print("\\n=== Starting Latency Test inside QEMU ===\\n");
-    
-    // Initialize dummy inputs
-    for (int i = 0; i < 32; i++) {
-        input_ids[i] = i % 5;
-        attention_mask[i] = 1;
-        token_type_ids[i] = 0;
-    }
-    
+
+    // Deterministic dummy inputs. These MUST match runner.default_input_array(),
+    // which feeds the host ONNX Runtime reference used for the parity check.
+@TATVA_IO_INIT@
+
     // Warm-up runs
     for (int i = 0; i < WARMUP_COUNT; i++) {
-        tvmgen_default_run(input_ids, attention_mask, token_type_ids, output_logits);
+        tvmgen_default_run(@TATVA_RUN_ARGS@);
     }
-    
+
     // Timed runs
     for (int i = 0; i < TIMED_COUNT; i++) {
         uint64_t start = read_cycles();
-        tvmgen_default_run(input_ids, attention_mask, token_type_ids, output_logits);
+        tvmgen_default_run(@TATVA_RUN_ARGS@);
         uint64_t end = read_cycles();
         sbi_print("RUN_CYCLES: ");
         sbi_print_uint(end - start);
         sbi_print("\\n");
     }
-    
-    // Print first 5 logits for correctness verification
+
+    // Print first 5 output values for correctness verification
     sbi_print("FIRST_LOGITS: ");
     for (int i = 0; i < 5 && i < OUTPUT_SIZE; i++) {
-        sbi_print_float(output_logits[i]);
+        sbi_print_float((float)tatva_output[i]);
         sbi_print(" ");
     }
     sbi_print("\\n");
-    
+
     sbi_print("=== Latency Test Finished ===\\n");
     sbi_shutdown();
     while (1);
@@ -244,11 +266,6 @@ int main(void) {
 class ExecutionEnvironment(Enum):
     QEMU_SIM = "QEMU_SIM"
     REAL_HW = "REAL_HW"
-
-
-class CompilationError(Exception):
-    """Raised when compilation or linking fails."""
-    pass
 
 
 class CompiledArtifact:
@@ -395,6 +412,280 @@ def map_dtype(dtype: str) -> tuple[int, int]:
         return 2, 32
 
 
+def c_type_for_dtype(dtype: str) -> str:
+    """
+    Map a tensor dtype name onto the C type used for its static buffer.
+    """
+    dtype = str(dtype)
+    return {
+        "float32": "float",
+        "float64": "double",
+        "int64": "int64_t",
+        "int32": "int32_t",
+        "int16": "int16_t",
+        "int8": "int8_t",
+        "uint64": "uint64_t",
+        "uint32": "uint32_t",
+        "uint16": "uint16_t",
+        "uint8": "uint8_t",
+        "bool": "uint8_t",
+    }.get(dtype, "float" if "float" in dtype else "int32_t")
+
+
+def c_identifier(name: str) -> str:
+    """
+    Turn a tensor name into a safe C identifier.
+
+    ONNX permits names such as 'input.1' or '/encoder/Add_output_0', which TVM
+    carries through into its variable names. Emitting those verbatim produces C
+    that does not parse.
+    """
+    safe = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in str(name))
+    if not safe or safe[0].isdigit():
+        safe = "t_" + safe
+    return safe
+
+
+def input_fill_kind(name: str, dtype: str) -> str:
+    """
+    Decide how a given model input is filled with dummy data.
+
+    Returns one of 'ones', 'zeros', 'mod5' or 'ramp'. Both the host reference and
+    the on-target harness derive their values from this, so they cannot drift apart.
+
+    The name is normalized through c_identifier() first because TVM rewrites ONNX
+    names that are not valid identifiers (`attention.mask` -> `attention_mask`).
+    Without this, the host would classify the original name and the target the
+    rewritten one, and the two sides could fill the same tensor differently.
+    """
+    lname = c_identifier(name).lower()
+    if "attention_mask" in lname or lname.endswith("_mask") or lname == "mask":
+        return "ones"
+    if "token_type" in lname or "segment_id" in lname:
+        return "zeros"
+    if "float" in str(dtype):
+        return "ramp"
+    return "mod5"
+
+
+def default_input_array(name: str, shape: Any, dtype: str) -> np.ndarray:
+    """
+    Build the deterministic dummy tensor for one model input.
+
+    'ramp' deliberately uses quarter steps: every value is exactly representable
+    in binary floating point, so the host array and the value the target computes
+    from the same formula are bit-identical rather than merely close.
+    """
+    shape = tuple(int(d) for d in shape)
+    n = int(np.prod(shape)) if shape else 1
+    kind = input_fill_kind(name, dtype)
+
+    if kind == "ones":
+        flat = np.ones(n, dtype=np.float64)
+    elif kind == "zeros":
+        flat = np.zeros(n, dtype=np.float64)
+    elif kind == "ramp":
+        flat = ((np.arange(n, dtype=np.float64) % 9.0) - 4.0) * 0.25
+    else:
+        flat = np.arange(n, dtype=np.float64) % 5.0
+
+    return flat.reshape(shape).astype(np.dtype(dtype))
+
+
+def _c_fill_expression(kind: str, c_type: str) -> str:
+    """
+    The C expression, in terms of the loop variable `i`, matching default_input_array().
+    """
+    if kind == "ones":
+        return f"({c_type})1"
+    if kind == "zeros":
+        return f"({c_type})0"
+    if kind == "ramp":
+        return f"({c_type})((((float)(i % 9)) - 4.0f) * 0.25f)"
+    return f"({c_type})(i % 5)"
+
+
+# Prelude injected at the top of the TVM-generated operators.c when the optimized
+# softmax kernel is swapped in. The scratch buffer is static rather than a VLA: a
+# variable-length array of `cols` floats lives on a 64 KB bare-metal stack and
+# silently corrupts memory the moment a row is wide enough.
+SOFTMAX_PRELUDE = """/* --- TATVA optimized softmax support --- */
+extern void sbi_print(const char* str);
+#define TATVA_SOFTMAX_MAX_COLS 8192
+static float tatva_softmax_exp_buf[TATVA_SOFTMAX_MAX_COLS];
+/* --- end TATVA softmax support --- */
+"""
+
+# Shared shape-handling preamble for both softmax variants. Softmax is normalized
+# over the LAST axis, so any leading dimensions are folded into the row count --
+# reading shape[1] as the column count silently ignores most of an N-D tensor.
+_SOFTMAX_HEADER = """TVM_DLL int32_t __tvm_ffi_softmax(void* self_handle, void* args, int32_t num_args, void* result) {
+  if (num_args != 2) return -1;
+  void* var_input = (((TVMFFIAny*)args)[0].type_index == 70) ? ((void*)((char*)(((TVMFFIAny*)args)[0].v_ptr) + 24)) : (((TVMFFIAny*)args)[0].v_ptr);
+  void* var_T_softmax_norm = (((TVMFFIAny*)args)[1].type_index == 70) ? ((void*)((char*)(((TVMFFIAny*)args)[1].v_ptr) + 24)) : (((TVMFFIAny*)args)[1].v_ptr);
+
+  DLTensor* t_in = (DLTensor*)var_input;
+  DLTensor* t_out = (DLTensor*)var_T_softmax_norm;
+  float* input_ptr = (float*)t_in->data;
+  float* T_softmax_norm = (float*)t_out->data;
+
+  int32_t ndim = (int32_t)t_in->ndim;
+  if (ndim < 1) {
+    sbi_print("[TATVA] optimized softmax: rank-0 tensor is not supported\\n");
+    return -1;
+  }
+  int64_t* shape = t_in->shape;
+  int32_t cols = (int32_t)shape[ndim - 1];
+  int32_t rows = 1;
+  for (int32_t d = 0; d < ndim - 1; ++d) {
+    rows *= (int32_t)shape[d];
+  }
+  if (cols <= 0 || cols > TATVA_SOFTMAX_MAX_COLS) {
+    sbi_print("[TATVA] optimized softmax: row width exceeds TATVA_SOFTMAX_MAX_COLS\\n");
+    return -1;
+  }
+  float* local_exp = tatva_softmax_exp_buf;
+"""
+
+# Scalar Schraudolph fast-exponential softmax.
+SOFTMAX_SCALAR = _SOFTMAX_HEADER + """
+  for (int32_t i0 = 0; i0 < rows; ++i0) {
+    float* in_row = input_ptr + (int64_t)i0 * cols;
+    float* out_row = T_softmax_norm + (int64_t)i0 * cols;
+
+    float max_val = in_row[0];
+    for (int32_t k = 1; k < cols; ++k) {
+      if (in_row[k] > max_val) {
+        max_val = in_row[k];
+      }
+    }
+
+    float sum = 0.0f;
+    for (int32_t k = 0; k < cols; ++k) {
+      float val = in_row[k] - max_val;
+      if (val < -15.0f) {
+        local_exp[k] = 0.0f;
+      } else {
+        union {
+          float f;
+          int32_t i;
+        } u;
+        u.i = (int32_t)(val * 12102203.0f + 1065353216.0f);
+        local_exp[k] = u.f;
+      }
+      sum += local_exp[k];
+    }
+
+    float inv_sum = 1.0f / sum;
+    for (int32_t k = 0; k < cols; ++k) {
+      out_row[k] = local_exp[k] * inv_sum;
+    }
+  }
+  return 0;
+}"""
+
+# RVV 1.0 vectorized variant of the same kernel.
+SOFTMAX_VECTOR = _SOFTMAX_HEADER + """
+  for (int32_t i0 = 0; i0 < rows; ++i0) {
+    float* in_row = input_ptr + (int64_t)i0 * cols;
+    float* out_row = T_softmax_norm + (int64_t)i0 * cols;
+
+    // RVV 1.0 Vector Max Reduction
+    size_t vl;
+    float max_val = in_row[0];
+    vfloat32m1_t v_max = __riscv_vfmv_s_f_f32m1(max_val, 1);
+    for (int32_t k = 0; k < cols; k += vl) {
+      vl = __riscv_vsetvl_e32m1(cols - k);
+      vfloat32m1_t v_in = __riscv_vle32_v_f32m1(in_row + k, vl);
+      v_max = __riscv_vfredmax_vs_f32m1_f32m1(v_in, v_max, vl);
+    }
+    max_val = __riscv_vfmv_f_s_f32m1_f32(v_max);
+
+    // RVV 1.0 Vector Exponent & Sum Accumulation
+    vfloat32m1_t v_sum = __riscv_vfmv_s_f_f32m1(0.0f, 1);
+    for (int32_t k = 0; k < cols; k += vl) {
+      vl = __riscv_vsetvl_e32m1(cols - k);
+      vfloat32m1_t v_in = __riscv_vle32_v_f32m1(in_row + k, vl);
+      vfloat32m1_t v_diff = __riscv_vfsub_vf_f32m1(v_in, max_val, vl);
+      vfloat32m1_t v_scaled = __riscv_vfmul_vf_f32m1(v_diff, 12102203.0f, vl);
+      vfloat32m1_t v_offset = __riscv_vfadd_vf_f32m1(v_scaled, 1065353216.0f, vl);
+      vint32m1_t v_int = __riscv_vfcvt_x_f_v_i32m1(v_offset, vl);
+      vfloat32m1_t v_exp = __riscv_vreinterpret_v_i32m1_f32m1(v_int);
+      __riscv_vse32_v_f32m1(local_exp + k, v_exp, vl);
+      v_sum = __riscv_vfredusum_vs_f32m1_f32m1(v_exp, v_sum, vl);
+    }
+    float sum = __riscv_vfmv_f_s_f32m1_f32(v_sum);
+
+    // RVV 1.0 Vector Normalization Division
+    float inv_sum = 1.0f / sum;
+    for (int32_t k = 0; k < cols; k += vl) {
+      vl = __riscv_vsetvl_e32m1(cols - k);
+      vfloat32m1_t v_e = __riscv_vle32_v_f32m1(local_exp + k, vl);
+      vfloat32m1_t v_out = __riscv_vfmul_vf_f32m1(v_e, inv_sum, vl);
+      __riscv_vse32_v_f32m1(out_row + k, v_out, vl);
+    }
+  }
+  return 0;
+}"""
+
+# Matches every generated softmax entry point, whatever TVM chose to number them.
+# The trailing '{' keeps it from matching the forward declaration.
+_SOFTMAX_DEF_RE = re.compile(
+    r"TVM_DLL int32_t __tvm_ffi_(softmax\d*)"
+    r"\(void\* self_handle, void\* args, int32_t num_args, void\* result\) \{"
+)
+
+
+def inject_optimized_softmax(operators_c: str, is_vector: bool) -> tuple[str, int]:
+    """
+    Replace every TVM-generated softmax kernel in `operators_c` with TATVA's own.
+
+    Returns the rewritten source and the number of kernels replaced. Replacing zero
+    kernels is reported to the caller rather than passed off as a successful
+    optimization -- an unpatched build is just the baseline wearing a different name.
+    """
+    custom = SOFTMAX_VECTOR if is_vector else SOFTMAX_SCALAR
+
+    patched = 0
+    search_from = 0
+    while True:
+        match = _SOFTMAX_DEF_RE.search(operators_c, search_from)
+        if match is None:
+            break
+
+        start, pos = match.start(), match.end()
+        depth = 1
+        while depth > 0 and pos < len(operators_c):
+            ch = operators_c[pos]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+            pos += 1
+        if depth != 0:
+            raise CompilationError(
+                stage="softmax-injection",
+                command="operators.c rewrite",
+                details=(
+                    f"Unbalanced braces while scanning the body of __tvm_ffi_{match.group(1)}; "
+                    "refusing to emit corrupted C."
+                ),
+            )
+
+        replacement = custom.replace("__tvm_ffi_softmax", f"__tvm_ffi_{match.group(1)}")
+        operators_c = operators_c[:start] + replacement + operators_c[pos:]
+        search_from = start + len(replacement)
+        patched += 1
+
+    if patched:
+        prelude = SOFTMAX_PRELUDE
+        if is_vector:
+            prelude = "#include <riscv_vector.h>\n" + prelude
+        operators_c = prelude + operators_c
+
+    return operators_c, patched
+
+
 def verify_target(variant: TargetVariant) -> dict[str, Any]:
     """
     Compile a tiny hello-world C program with the variant's march/mabi via the RISC-V GCC,
@@ -529,7 +820,12 @@ def compile_model(
         lib = relax.build(mod_legalized, target="c")
         operators_c = lib.mod.imports[0].inspect_source()
     except Exception as e:
-        raise CompilationError(f"TVM Relax compilation to C failed: {e}") from e
+        raise CompilationError(
+            stage="tvm-lowering",
+            command="relax.build(mod, target='c')",
+            stderr=str(e),
+            details="TVM Relax could not lower this model to C.",
+        ) from e
 
     func = mod_legalized["main"]
     constants_list = []
@@ -563,23 +859,36 @@ def compile_model(
 
     tensors_mapped = {}
     curr_offset = 0
+    used_cnames: set[str] = set()
 
     for name, sinfo, is_input in vars_to_process:
         if not hasattr(sinfo, "shape") or sinfo.shape is None:
             continue
         shape = [int(dim) for dim in sinfo.shape]
-        dtype = sinfo.dtype
+        dtype = str(sinfo.dtype)
 
         dtype_code, dtype_bits = map_dtype(dtype)
-        num_elements = int(np.prod(shape))
+        num_elements = int(np.prod(shape)) if shape else 1
         size_bytes = num_elements * (dtype_bits // 8)
+
+        # ONNX names survive into TVM's var names and are not always valid C.
+        cname = c_identifier(name)
+        if cname in used_cnames:
+            suffix = 2
+            while f"{cname}_{suffix}" in used_cnames:
+                suffix += 1
+            cname = f"{cname}_{suffix}"
+        used_cnames.add(cname)
 
         tensors_mapped[name] = {
             "name": name,
+            "cname": cname,
             "shape": shape,
             "ndim": len(shape),
+            "dtype": dtype,
             "dtype_code": dtype_code,
             "dtype_bits": dtype_bits,
+            "num_elements": num_elements,
             "size_bytes": size_bytes,
             "is_input": is_input,
         }
@@ -588,6 +897,18 @@ def compile_model(
         if not is_input:
             tensors_mapped[name]["offset"] = curr_offset
             curr_offset += size_aligned
+
+    # The graph inputs, in declaration order. This list -- not a fixed BERT triple --
+    # defines the tvmgen_default_run() signature and the harness buffers.
+    input_infos = [
+        tensors_mapped[p.name_hint] for p in func.params if p.name_hint in tensors_mapped
+    ]
+    if not input_infos:
+        raise CompilationError(
+            stage="harness-generation",
+            command="compile_model",
+            details="The model exposes no statically shaped graph inputs, so no benchmark harness can be generated.",
+        )
 
     weights_h_lines = [
         "#ifndef WEIGHTS_H",
@@ -663,18 +984,18 @@ def compile_model(
     model_run_lines.append("")
 
     for name, info in tensors_mapped.items():
-        shape_str = ", ".join(str(x) for x in info["shape"])
-        model_run_lines.append(f"static int64_t shape_{name}[] = {{ {shape_str} }};")
+        shape_str = ", ".join(str(x) for x in info["shape"]) or "1"
+        model_run_lines.append(f"static int64_t shape_{info['cname']}[] = {{ {shape_str} }};")
 
         data_init = "NULL" if info["is_input"] else f"&global_pool[{info['offset']}]"
         model_run_lines.extend(
             [
-                f"static DLTensor tensor_{name} = {{",
+                f"static DLTensor tensor_{info['cname']} = {{",
                 f"    .data = {data_init},",
                 "    .device = {1, 0},",
                 f"    .ndim = {info['ndim']},",
                 f"    .dtype = {{{info['dtype_code']}, {info['dtype_bits']}, 1}},",
-                f"    .shape = shape_{name},",
+                f"    .shape = shape_{info['cname']},",
                 "    .strides = NULL,",
                 "    .byte_offset = 0",
                 "};",
@@ -707,21 +1028,42 @@ def compile_model(
 
     model_run_lines.extend(
         [
+            "// Bump allocator with LIFO release. Each block carries a 16-byte header",
+            "// holding the pool offset to restore and the block's own size, so a free",
+            "// gives back exactly one block. The previous implementation reset the",
+            "// offset to 0 on every free, which handed the entire pool back out while",
+            "// earlier allocations from the same kernel were still live.",
+            "#define TATVA_WS_HEADER 16u",
             "static uint8_t workspace_pool[1024 * 1024] __attribute__((aligned(16)));",
             "static size_t workspace_offset = 0;",
             "",
             "void* TVMBackendAllocWorkspace(int device_type, int device_id, uint64_t nbytes, int dtype_code_or_handle, int dtype_bits) {",
-            "    size_t size = (nbytes + 15) & ~15;",
-            "    if (workspace_offset + size > sizeof(workspace_pool)) {",
+            "    (void)device_type; (void)device_id; (void)dtype_code_or_handle; (void)dtype_bits;",
+            "    size_t size = ((size_t)nbytes + 15u) & ~(size_t)15u;",
+            "    if (workspace_offset + TATVA_WS_HEADER + size > sizeof(workspace_pool)) {",
+            '        sbi_print("[TATVA] workspace pool exhausted; rebuild with a larger pool\\n");',
             "        return NULL;",
             "    }",
-            "    void* ptr = &workspace_pool[workspace_offset];",
-            "    workspace_offset += size;",
-            "    return ptr;",
+            "    size_t prev = workspace_offset;",
+            "    uint8_t* block = &workspace_pool[workspace_offset + TATVA_WS_HEADER];",
+            "    ((size_t*)block)[-2] = prev;",
+            "    ((size_t*)block)[-1] = size;",
+            "    workspace_offset += TATVA_WS_HEADER + size;",
+            "    return block;",
             "}",
             "",
             "int TVMBackendFreeWorkspace(int device_type, int device_id, void* ptr) {",
-            "    workspace_offset = 0;",
+            "    (void)device_type; (void)device_id;",
+            "    if (ptr == NULL) {",
+            "        return 0;",
+            "    }",
+            "    size_t prev = ((size_t*)ptr)[-2];",
+            "    size_t size = ((size_t*)ptr)[-1];",
+            "    if (prev + TATVA_WS_HEADER + size == workspace_offset) {",
+            "        workspace_offset = prev;",
+            "    }",
+            "    // Out-of-order free: leave the pool untouched rather than reclaiming",
+            "    // memory that later allocations are still using.",
             "    return 0;",
             "}",
             "",
@@ -742,19 +1084,23 @@ def compile_model(
 
     last_binding = func.body.blocks[-1].bindings[-1]
     out_var_name = last_binding.var.name_hint
+    out_info = tensors_mapped.get(out_var_name)
+    if out_info is None:
+        raise CompilationError(
+            stage="harness-generation",
+            command="compile_model",
+            details=(
+                f"The model's final value '{out_var_name}' has no static tensor shape "
+                "(models returning a tuple of outputs are not supported yet)."
+            ),
+        )
 
-    model_run_lines.append(
-        "int32_t tvmgen_default_run(void* input_ids_ptr, void* attention_mask_ptr, void* token_type_ids_ptr, void* output_ptr) {"
-    )
-    model_run_lines.extend(
-        [
-            "  tensor_input_ids.data = input_ids_ptr;",
-            "  tensor_attention_mask.data = attention_mask_ptr;",
-            "  tensor_token_type_ids.data = token_type_ids_ptr;",
-            f"  tensor_{out_var_name}.data = output_ptr;",
-            "",
-        ]
-    )
+    # Signature is derived from the graph's own inputs, in order, plus the output.
+    run_params = ", ".join(f"void* {info['cname']}_ptr" for info in input_infos) + ", void* output_ptr"
+    model_run_lines.append(f"int32_t tvmgen_default_run({run_params}) {{")
+    for info in input_infos:
+        model_run_lines.append(f"  tensor_{info['cname']}.data = {info['cname']}_ptr;")
+    model_run_lines.extend([f"  tensor_{out_info['cname']}.data = output_ptr;", ""])
 
     for block in func.body.blocks:
         for binding in block.bindings:
@@ -771,7 +1117,7 @@ def compile_model(
             c_args = []
             for arg in args_fields:
                 if isinstance(arg, relax.Var):
-                    c_args.append(f"&tensor_{arg.name_hint}")
+                    c_args.append(f"&tensor_{tensors_mapped[arg.name_hint]['cname']}")
                 elif isinstance(arg, relax.Constant):
                     const_idx = -1
                     arr = arg.data.numpy()
@@ -783,7 +1129,7 @@ def compile_model(
                                 break
                     c_args.append(f"&tensor_constant_{const_idx}")
 
-            c_args.append(f"&tensor_{binding.var.name_hint}")
+            c_args.append(f"&tensor_{tensors_mapped[binding.var.name_hint]['cname']}")
             num_args = len(c_args)
 
             model_run_lines.extend(
@@ -816,137 +1162,33 @@ def compile_model(
     with open(os.path.join(build_dir, "model_run.c"), "w") as f:
         f.write("\n".join(model_run_lines))
 
-    output_size_bytes = tensors_mapped[out_var_name]["size_bytes"]
+    # OUTPUT_SIZE is an element count derived from the output tensor's own dtype.
+    # It used to be hardcoded as bytes // 4, which is only correct for float32.
+    output_c_type = c_type_for_dtype(out_info["dtype"])
     model_info_lines = [
         "#ifndef MODEL_INFO_H",
         "#define MODEL_INFO_H",
-        f"#define OUTPUT_SIZE {output_size_bytes // 4}",
+        f"#define OUTPUT_SIZE {max(1, out_info['num_elements'])}",
+        f"#define OUTPUT_C_TYPE {output_c_type}",
         "#endif // MODEL_INFO_H",
     ]
     with open(os.path.join(build_dir, "model_info.h"), "w") as f:
         f.write("\n".join(model_info_lines))
 
-    # Apply custom RISC-V optimized Softmax operator replacement if enabled in metadata
+    # Swap TVM's generated softmax for TATVA's Schraudolph fast-exponential kernel.
     if model_ir.metadata.get("softmax_optimized", False):
         is_vector = variant.gcc_march.endswith("v") or "gcv" in variant.gcc_march.lower()
-        if is_vector:
-            operators_c = "#include <riscv_vector.h>\n" + operators_c
-            custom_softmax = """TVM_DLL int32_t __tvm_ffi_softmax(void* self_handle, void* args, int32_t num_args, void* result) {
-  if (num_args != 2) return -1;
-  void* var_input = (((TVMFFIAny*)args)[0].type_index == 70) ? ((void*)((char*)(((TVMFFIAny*)args)[0].v_ptr) + 24)) : (((TVMFFIAny*)args)[0].v_ptr);
-  void* var_T_softmax_norm = (((TVMFFIAny*)args)[1].type_index == 70) ? ((void*)((char*)(((TVMFFIAny*)args)[1].v_ptr) + 24)) : (((TVMFFIAny*)args)[1].v_ptr);
-  
-  float* input_ptr = (float*)(((DLTensor*)var_input)[0].data);
-  float* T_softmax_norm = (float*)(((DLTensor*)var_T_softmax_norm)[0].data);
-  
-  int64_t* shape = ((DLTensor*)var_input)[0].shape;
-  int32_t rows = (int32_t)shape[0];
-  int32_t cols = (int32_t)shape[1];
-  
-  for (int32_t i0 = 0; i0 < rows; ++i0) {
-    float* in_row = input_ptr + i0 * cols;
-    float* out_row = T_softmax_norm + i0 * cols;
-    
-    // RVV 1.0 Vector Max Reduction
-    size_t vl;
-    float max_val = in_row[0];
-    vfloat32m1_t v_max = __riscv_vfmv_s_f_f32m1(max_val, 1);
-    for (int32_t k = 0; k < cols; k += vl) {
-      vl = __riscv_vsetvl_e32m1(cols - k);
-      vfloat32m1_t v_in = __riscv_vle32_v_f32m1(in_row + k, vl);
-      v_max = __riscv_vfredmax_vs_f32m1_f32m1(v_in, v_max, vl);
-    }
-    max_val = __riscv_vfmv_f_s_f32m1_f32(v_max);
-
-    // RVV 1.0 Vector Exponent & Sum Accumulation
-    float local_exp[cols];
-    vfloat32m1_t v_sum = __riscv_vfmv_s_f_f32m1(0.0f, 1);
-    for (int32_t k = 0; k < cols; k += vl) {
-      vl = __riscv_vsetvl_e32m1(cols - k);
-      vfloat32m1_t v_in = __riscv_vle32_v_f32m1(in_row + k, vl);
-      vfloat32m1_t v_diff = __riscv_vfsub_vf_f32m1(v_in, max_val, vl);
-      vfloat32m1_t v_scaled = __riscv_vfmul_vf_f32m1(v_diff, 12102203.0f, vl);
-      vfloat32m1_t v_offset = __riscv_vfadd_vf_f32m1(v_scaled, 1065353216.0f, vl);
-      vint32m1_t v_int = __riscv_vfcvt_x_f_v_i32m1(v_offset, vl);
-      vfloat32m1_t v_exp = __riscv_vreinterpret_v_i32m1_f32m1(v_int);
-      __riscv_vse32_v_f32m1(local_exp + k, v_exp, vl);
-      v_sum = __riscv_vfredusum_vs_f32m1_f32m1(v_exp, v_sum, vl);
-    }
-    float sum = __riscv_vfmv_f_s_f32m1_f32(v_sum);
-
-    // RVV 1.0 Vector Normalization Division
-    float inv_sum = 1.0f / sum;
-    for (int32_t k = 0; k < cols; k += vl) {
-      vl = __riscv_vsetvl_e32m1(cols - k);
-      vfloat32m1_t v_e = __riscv_vle32_v_f32m1(local_exp + k, vl);
-      vfloat32m1_t v_out = __riscv_vfmul_vf_f32m1(v_e, inv_sum, vl);
-      __riscv_vse32_v_f32m1(out_row + k, v_out, vl);
-    }
-  }
-  return 0;
-}"""
-        else:
-            custom_softmax = """TVM_DLL int32_t __tvm_ffi_softmax(void* self_handle, void* args, int32_t num_args, void* result) {
-  if (num_args != 2) return -1;
-  void* var_input = (((TVMFFIAny*)args)[0].type_index == 70) ? ((void*)((char*)(((TVMFFIAny*)args)[0].v_ptr) + 24)) : (((TVMFFIAny*)args)[0].v_ptr);
-  void* var_T_softmax_norm = (((TVMFFIAny*)args)[1].type_index == 70) ? ((void*)((char*)(((TVMFFIAny*)args)[1].v_ptr) + 24)) : (((TVMFFIAny*)args)[1].v_ptr);
-  
-  float* input_ptr = (float*)(((DLTensor*)var_input)[0].data);
-  float* T_softmax_norm = (float*)(((DLTensor*)var_T_softmax_norm)[0].data);
-  
-  int64_t* shape = ((DLTensor*)var_input)[0].shape;
-  int32_t rows = (int32_t)shape[0];
-  int32_t cols = (int32_t)shape[1];
-  
-  for (int32_t i0 = 0; i0 < rows; ++i0) {
-    float* in_row = input_ptr + i0 * cols;
-    float* out_row = T_softmax_norm + i0 * cols;
-    
-    float max_val = in_row[0];
-    for (int32_t k = 1; k < cols; ++k) {
-      if (in_row[k] > max_val) {
-        max_val = in_row[k];
-      }
-    }
-    
-    float sum = 0.0f;
-    float local_exp[cols];
-    for (int32_t k = 0; k < cols; ++k) {
-      float val = in_row[k] - max_val;
-      if (val < -15.0f) {
-        local_exp[k] = 0.0f;
-      } else {
-        union {
-          float f;
-          int32_t i;
-        } u;
-        u.i = (int32_t)(val * 12102203.0f + 1065353216.0f);
-        local_exp[k] = u.f;
-      }
-      sum += local_exp[k];
-    }
-    
-    float inv_sum = 1.0f / sum;
-    for (int32_t k = 0; k < cols; ++k) {
-      out_row[k] = local_exp[k] * inv_sum;
-    }
-  }
-  return 0;
-}"""
-        for suffix in ["", "1", "2", "3", "4", "5"]:
-            start_str = f"TVM_DLL int32_t __tvm_ffi_softmax{suffix}(void* self_handle, void* args, int32_t num_args, void* result) {{"
-            idx = operators_c.find(start_str)
-            if idx != -1:
-                brace_count = 1
-                pos = idx + len(start_str)
-                while brace_count > 0 and pos < len(operators_c):
-                    if operators_c[pos] == "{":
-                        brace_count += 1
-                    elif operators_c[pos] == "}":
-                        brace_count -= 1
-                    pos += 1
-                replaced_code = custom_softmax.replace("__tvm_ffi_softmax", f"__tvm_ffi_softmax{suffix}")
-                operators_c = operators_c[:idx] + replaced_code + operators_c[pos:]
+        operators_c, patched = inject_optimized_softmax(operators_c, is_vector)
+        if patched == 0:
+            raise CompilationError(
+                stage="softmax-injection",
+                command="compile_model",
+                details=(
+                    "The fusion pass was requested but TVM emitted no __tvm_ffi_softmax kernel "
+                    "to replace, so this build would be identical to the baseline. Re-run without "
+                    "the fuse pass, or check that the model's softmax survived legalization."
+                ),
+            )
 
     with open(os.path.join(build_dir, "operators.c"), "w") as f:
         f.write(operators_c)
@@ -968,8 +1210,32 @@ def compile_model(
     with open(os.path.join(build_dir, "link.ld"), "w") as f:
         f.write(LINK_LD)
 
+    # Fill the harness template from the model's own inputs. Every buffer, its C
+    # type and its dummy-data expression come from input_infos, so a model that is
+    # not BERT-shaped gets a harness that matches it instead of one that will not link.
+    # `run_params` is the same string used for the tvmgen_default_run() definition
+    # above, so the extern declaration in main.c cannot drift from it.
+    run_args = ", ".join(f"in_{info['cname']}" for info in input_infos) + ", tatva_output"
+
+    io_buffer_lines: list[str] = []
+    io_init_lines: list[str] = []
+    for info in input_infos:
+        c_type = c_type_for_dtype(info["dtype"])
+        count = max(1, info["num_elements"])
+        kind = input_fill_kind(info["name"], info["dtype"])
+        fill = _c_fill_expression(kind, c_type)
+        io_buffer_lines.append(f"static {c_type} in_{info['cname']}[{count}];  // {info['name']} {info['shape']}")
+        io_init_lines.append(f"    for (int i = 0; i < {count}; i++) {{")
+        io_init_lines.append(f"        in_{info['cname']}[i] = {fill};")
+        io_init_lines.append("    }")
+    io_buffer_lines.append("static OUTPUT_C_TYPE tatva_output[OUTPUT_SIZE];")
+
     main_c_content = (
-        MAIN_C_BENCHMARK.replace("WARMUP_COUNT", str(warmup_count))
+        MAIN_C_BENCHMARK.replace("@TATVA_RUN_PARAMS@", run_params)
+        .replace("@TATVA_RUN_ARGS@", run_args)
+        .replace("@TATVA_IO_BUFFERS@", "\n".join(io_buffer_lines))
+        .replace("@TATVA_IO_INIT@", "\n".join(io_init_lines))
+        .replace("WARMUP_COUNT", str(warmup_count))
         .replace("TIMED_COUNT", str(timed_count))
     )
     with open(os.path.join(build_dir, "main.c"), "w") as f:
@@ -1006,12 +1272,19 @@ def compile_model(
         res = subprocess.run(compile_cmd, capture_output=True, text=True, timeout=120)
         if res.returncode != 0:
             raise CompilationError(
-                f"GCC cross-compilation failed with exit code {res.returncode}:\nStdout: {res.stdout}\nStderr: {res.stderr}"
+                stage="cross-compilation",
+                command=" ".join(compile_cmd),
+                stderr=res.stderr or res.stdout,
+                details=f"{gcc_name} exited with code {res.returncode} targeting {variant.name}.",
             )
+    except CompilationError:
+        raise
     except Exception as e:
-        if not isinstance(e, CompilationError):
-            raise CompilationError(f"Failed to launch GCC compilation: {e}") from e
-        raise e
+        raise CompilationError(
+            stage="cross-compilation",
+            command=" ".join(compile_cmd),
+            details=f"Could not launch the cross-compiler: {e}",
+        ) from e
 
     return CompiledArtifact(elf_path=elf_path, build_dir=build_dir, variant=variant)
 
@@ -1088,38 +1361,53 @@ def run_and_measure(
     )
 
 
+def default_inputs_for(onnx_path: str) -> dict[str, np.ndarray]:
+    """
+    Build the host-side input set that the generated benchmark harness reproduces.
+
+    Shapes come from compiler.resolve_input_shapes -- the same function that binds
+    the symbolic dims for the TVM import -- and values from default_input_array, the
+    same function whose C translation main.c emits. The old version hardcoded the
+    three BERT tensors, so any other model silently got no inputs at all and the
+    parity check compared the target against whatever onnxruntime happened to do.
+    """
+    import onnx
+
+    from tatva.compiler import resolve_input_shapes
+
+    onnx_model = onnx.load(onnx_path)
+    shapes = resolve_input_shapes(onnx_model)
+
+    dtypes: dict[str, str] = {}
+    for inp in onnx_model.graph.input:
+        elem_type = inp.type.tensor_type.elem_type
+        np_dtype = onnx.helper.tensor_dtype_to_np_dtype(elem_type)
+        dtypes[inp.name] = str(np_dtype)
+
+    return {
+        name: default_input_array(name, shape, dtypes.get(name, "float32"))
+        for name, shape in shapes.items()
+    }
+
+
 def reference_output(onnx_path: str, inputs: dict[str, Any] | None = None) -> np.ndarray:
     """
     Get the ground-truth output from the host using onnxruntime.
-    If inputs are not provided, default inputs matching main.c are used.
+    If inputs are not provided, the same dummy inputs main.c generates are used.
     """
     import onnxruntime as ort
 
     sess = ort.InferenceSession(onnx_path)
 
     if inputs is None:
-        input_names = [inp.name for inp in sess.get_inputs()]
-        seq_len = 32
+        inputs = default_inputs_for(onnx_path)
 
-        # Check if the model has a specified shape
-        for inp in sess.get_inputs():
-            if inp.name == "input_ids":
-                if len(inp.shape) > 1 and isinstance(inp.shape[1], int):
-                    seq_len = inp.shape[1]
+    # Only feed tensors the session actually declares; ONNX graph inputs can include
+    # initializers that onnxruntime folds away.
+    expected = {inp.name for inp in sess.get_inputs()}
+    feed = {k: v for k, v in inputs.items() if k in expected}
 
-        input_ids = np.array([[i % 5 for i in range(seq_len)]], dtype=np.int64)
-        attention_mask = np.ones((1, seq_len), dtype=np.int64)
-        token_type_ids = np.zeros((1, seq_len), dtype=np.int64)
-
-        inputs = {}
-        if "input_ids" in input_names:
-            inputs["input_ids"] = input_ids
-        if "attention_mask" in input_names:
-            inputs["attention_mask"] = attention_mask
-        if "token_type_ids" in input_names:
-            inputs["token_type_ids"] = token_type_ids
-
-    outputs = sess.run(None, inputs)
+    outputs = sess.run(None, feed)
     return outputs[0].flatten()
 
 

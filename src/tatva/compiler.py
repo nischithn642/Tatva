@@ -145,6 +145,32 @@ class GraphReport:
     unsupported_ops: list[str]
 
 
+def resolve_input_shapes(onnx_model: Any) -> dict[str, tuple[int, ...]]:
+    """
+    Resolve every graph input to a concrete static shape.
+
+    Bare-metal codegen cannot emit dynamic dimensions, so symbolic dims are bound
+    here: anything that looks like a sequence axis becomes 32, everything else
+    (batch, and any other unnamed symbol) becomes 1.
+
+    This is the single source of truth for input shapes. The host reference run and
+    the on-target benchmark harness both go through it, so they always agree -- if
+    they disagreed, the numerical parity check would compare two different problems.
+    """
+    shapes: dict[str, tuple[int, ...]] = {}
+    for inp in onnx_model.graph.input:
+        dims: list[int] = []
+        for dim in inp.type.tensor_type.shape.dim:
+            if dim.HasField("dim_value") and dim.dim_value > 0:
+                dims.append(int(dim.dim_value))
+            elif dim.HasField("dim_param") and ("seq" in dim.dim_param or "length" in dim.dim_param):
+                dims.append(32)
+            else:
+                dims.append(1)
+        shapes[inp.name] = tuple(dims)
+    return shapes
+
+
 def import_model(path: str, input_shapes: dict[str, tuple[int, ...]] | None = None) -> ModelIR:
     """
     Import an on-disk model (ONNX) into a TVM Relax module.
@@ -165,8 +191,11 @@ def import_model(path: str, input_shapes: dict[str, tuple[int, ...]] | None = No
     if not os.path.exists(path):
         raise FileNotFoundError(f"Model file not found: {path}")
 
-    # Check session cache if default input shapes are used
-    if input_shapes is None:
+    # The cache is keyed on file content only, so it is valid exclusively for the
+    # default-shape import. Caller-supplied shapes neither read from nor write to it;
+    # otherwise a custom-shape import would be handed back to a later default import.
+    use_cache = input_shapes is None
+    if use_cache:
         from tatva._cache import GLOBAL_SESSION_CACHE
         cached_ir = GLOBAL_SESSION_CACHE.get_model_ir(path)
         if cached_ir is not None:
@@ -178,23 +207,8 @@ def import_model(path: str, input_shapes: dict[str, tuple[int, ...]] | None = No
 
     onnx_model = onnx.load(path)
 
-    # Extract default input shapes if not explicitly provided
     if input_shapes is None:
-        input_shapes = {}
-        for inp in onnx_model.graph.input:
-            name = inp.name
-            shape = []
-            for dim in inp.type.tensor_type.shape.dim:
-                if dim.HasField("dim_value"):
-                    shape.append(dim.dim_value)
-                elif dim.HasField("dim_param"):
-                    if "seq" in dim.dim_param or "length" in dim.dim_param:
-                        shape.append(32)
-                    else:
-                        shape.append(1)
-                else:
-                    shape.append(1)
-            input_shapes[name] = tuple(shape)
+        input_shapes = resolve_input_shapes(onnx_model)
 
     try:
         mod = from_onnx(onnx_model, shape_dict=input_shapes)
@@ -203,7 +217,7 @@ def import_model(path: str, input_shapes: dict[str, tuple[int, ...]] | None = No
         if "not supported for frontend" in err_msg or "No Op registered" in err_msg:
             import re
             match = re.search(r"UnsupportedOp\w*", err_msg)
-            op_name = match.group(0) if match else "UnsupportedOpXYZ"
+            op_name = match.group(0) if match else "unknown"
             raise UnsupportedOperatorError(
                 operator_name=op_name,
                 details=f"Model contains operators unsupported by TVM frontend: {err_msg}"
@@ -219,8 +233,9 @@ def import_model(path: str, input_shapes: dict[str, tuple[int, ...]] | None = No
     # Relax packs parameters directly as constants inside the module, so we pass None for params
     model_ir = ModelIR(mod, None, metadata)
 
-    from tatva._cache import GLOBAL_SESSION_CACHE
-    GLOBAL_SESSION_CACHE.put_model_ir(path, model_ir)
+    if use_cache:
+        from tatva._cache import GLOBAL_SESSION_CACHE
+        GLOBAL_SESSION_CACHE.put_model_ir(path, model_ir)
 
     return model_ir
 

@@ -25,8 +25,11 @@ dependencies = [
     "numpy>=1.24.0,<3.0.0",
     "onnx>=1.14.0,<2.0.0",
     "onnxruntime>=1.15.0,<2.0.0",
-    "apache-tvm>=0.25.0",
-    "apache-tvm-ffi>=0.1.12",
+    # apache-tvm ships a prebuilt runtime DLL linked against one exact tvm-ffi ABI.
+    # An unpinned tvm-ffi resolves to a newer release and `import tvm` then dies with
+    # "WinError 127: the specified procedure could not be found". Keep both bounded.
+    "apache-tvm>=0.25.0,<0.26.0",
+    "apache-tvm-ffi>=0.1.12,<0.1.13",
     "python-dotenv>=1.0.0",
 ]
 

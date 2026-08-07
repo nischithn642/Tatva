@@ -47,9 +47,22 @@ class UnsupportedOperatorError(Exception):
 
 
 class CompilationError(Exception):
-    """Raised when cross-compilation GCC or TVM lowering commands fail."""
-    def __init__(self, stage: str, command: str, stderr: str, details: str = "") -> None:
-        super().__init__(f"Compilation failed during {stage} stage.")
+    """
+    Raised when cross-compilation, linking, or TVM lowering fails.
+
+    This is the only CompilationError in TATVA. The runner used to define a second,
+    unrelated one, so every compiler failure it raised fell through classify_failure()
+    into the 'unknown' bucket and lost its stage and command.
+    """
+    def __init__(self, stage: str = "compilation", command: str = "", stderr: str = "", details: str = "") -> None:
+        msg = f"Compilation failed during {stage} stage."
+        if details:
+            msg += f" {details}"
+        if stderr:
+            tail = stderr.strip().splitlines()[-15:]
+            if tail:
+                msg += "\n" + "\n".join(tail)
+        super().__init__(msg)
         self.stage = stage
         self.command = command
         self.stderr = stderr
@@ -109,26 +122,30 @@ def classify_failure(exception_or_result: Any) -> DiagnosisContext:
             },
         )
     elif isinstance(exception_or_result, Exception):
-        # Gracefully parse string representation for generic failures
+        # Generic failures reach us as text only. Recover whatever numbers the message
+        # actually contains and leave the rest absent -- this branch used to invent
+        # plausible-looking values (a 512 KB limit, an MSE of 0.210123), which then
+        # appeared in the user-facing diagnosis as if they had been measured.
         msg = str(exception_or_result)
         if "Memory limit exceeded" in msg:
-            return DiagnosisContext(
-                error_type="memory_limit_exceeded",
-                metadata={"limit_bytes": 524288, "required_bytes": 1048576, "details": msg},
-            )
+            nums = [int(n) for n in re.findall(r"(\d+) bytes", msg)]
+            metadata: Dict[str, Any] = {"details": msg}
+            if len(nums) >= 2:
+                metadata["limit_bytes"], metadata["required_bytes"] = nums[0], nums[1]
+            return DiagnosisContext(error_type="memory_limit_exceeded", metadata=metadata)
         elif "degradation exceeds tolerance" in msg or "AccuracyDropError" in msg:
-            return DiagnosisContext(
-                error_type="accuracy_drop",
-                metadata={"mse": 0.210123, "tolerance": 0.05, "details": msg},
-            )
+            match = re.search(r"\(([0-9.eE+-]+)\s*>\s*([0-9.eE+-]+)\)", msg)
+            metadata = {"details": msg}
+            if match:
+                metadata["mse"] = float(match.group(1))
+                metadata["tolerance"] = float(match.group(2))
+            return DiagnosisContext(error_type="accuracy_drop", metadata=metadata)
         elif "Unsupported operator" in msg or "UnsupportedOp" in msg or "not supported" in msg:
-            import re
-            match = re.search(r"UnsupportedOp\w*", msg)
-            op_name = match.group(0) if match else "UnsupportedOpXYZ"
-            return DiagnosisContext(
-                error_type="unsupported_operator",
-                metadata={"operator_name": op_name, "details": msg},
-            )
+            match = re.search(r"[Uu]nsupported operator:?\s*'([^']+)'", msg) or re.search(r"UnsupportedOp\w*", msg)
+            metadata = {"details": msg}
+            if match:
+                metadata["operator_name"] = match.group(1) if match.groups() else match.group(0)
+            return DiagnosisContext(error_type="unsupported_operator", metadata=metadata)
         return DiagnosisContext(
             error_type="unknown",
             metadata={"message": msg},
@@ -200,29 +217,50 @@ def get_offline_explanation(context: DiagnosisContext) -> str:
     meta = context.metadata
 
     if t == "memory_limit_exceeded":
-        limit = meta.get("limit_bytes", 524288)
-        req = meta.get("required_bytes", 1048576)
+        limit = meta.get("limit_bytes")
+        req = meta.get("required_bytes")
+        if limit is None or req is None:
+            headline = (
+                "Memory limit exceeded: the compiled model's workspace footprint does not fit the "
+                "target's bare-metal memory budget. (The exact sizes were not reported by the "
+                "failing stage.)"
+            )
+        else:
+            headline = (
+                f"Memory limit exceeded: The compiled model workspace footprint requires {req} bytes, "
+                f"which exceeds the configured target bare-metal RISC-V memory limit of {limit} bytes."
+            )
         return (
-            f"Memory limit exceeded: The compiled model workspace footprint requires {req} bytes, "
-            f"which exceeds the configured target bare-metal RISC-V memory limit of {limit} bytes.\n"
+            f"{headline}\n"
             f"Mitigation:\n"
             f"1. Reduce sequence dimension settings or network hidden sizes.\n"
             f"2. Check if variable layout planning in TVM can be compressed.\n"
             f"3. Increase the memory pool allocation boundaries if targeting real hardware."
         )
     elif t == "accuracy_drop":
-        mse = meta.get("mse", 0.0)
+        mse = meta.get("mse")
         tol = meta.get("tolerance", 0.05)
+        if mse is None:
+            headline = (
+                "Accuracy degradation check failed: the optimized model's outputs diverge from the "
+                f"host reference by more than the allowed tolerance of {tol}. (The measured MSE was "
+                "not reported by the failing stage.)"
+            )
+        else:
+            headline = (
+                f"Accuracy degradation check failed: The optimized model has a Mean Squared Error (MSE) "
+                f"of {mse:.6f} compared to the host reference outputs, exceeding the allowed tolerance "
+                f"threshold of {tol}."
+            )
         return (
-            f"Accuracy degradation check failed: The optimized model has a Mean Squared Error (MSE) "
-            f"of {mse:.6f} compared to the host reference outputs, exceeding the allowed tolerance threshold of {tol}.\n"
+            f"{headline}\n"
             f"Mitigation:\n"
             f"1. Inspect zero-points and scale bounds in dynamic quantization layers.\n"
             f"2. Consider executing passes selectively (e.g. bypassing quantization on sensitive attention subgraphs).\n"
             f"3. Verify input range configurations to ensure valid logits mappings."
         )
     elif t == "unsupported_operator":
-        op = meta.get("operator_name", "UnknownOp")
+        op = meta.get("operator_name") or "the reported operator"
         return (
             f"Unsupported operator: The operator '{op}' is not supported by the RISC-V TVM bare-metal backend.\n"
             f"Mitigation:\n"
@@ -231,11 +269,13 @@ def get_offline_explanation(context: DiagnosisContext) -> str:
             f"3. Implement a custom low-level fallback kernel in compiler.py/runner.py."
         )
     elif t == "compilation_error":
-        stage = meta.get("stage", "linking")
-        cmd = meta.get("command", "riscv64-unknown-elf-gcc")
+        stage = meta.get("stage") or "compilation"
+        cmd = meta.get("command") or "(command not recorded)"
+        detail = meta.get("details") or ""
         return (
             f"Compilation failure: The cross-compilation build stage failed during the '{stage}' step.\n"
-            f"Command executed: '{cmd}'\n"
+            + (f"{detail}\n" if detail else "")
+            + f"Command executed: '{cmd}'\n"
             f"Mitigation:\n"
             f"1. Verify target RISC-V cross-compiler options and flags.\n"
             f"2. Ensure TVM libraries are compiled and headers are in the search path.\n"

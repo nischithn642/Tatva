@@ -79,5 +79,8 @@ def test_rv64gcv_model_compilation_and_parity(pretrained_model_path, skip_if_no_
     baseline_res = establish_baseline(str(pretrained_model_path), variant)
     assert baseline_res.parity_passed is True
 
-    mse = float(np.mean((np.array(target_logits) - np.array(baseline_res.target_logits[:len(target_logits)])) ** 2))
+    # Compare the RVV build against the host reference, not against the scalar
+    # QEMU baseline -- the point is that vectorizing did not change the answer.
+    n = min(len(target_logits), len(baseline_res.ref_logits))
+    mse = float(np.mean((np.array(target_logits[:n]) - np.array(baseline_res.ref_logits[:n])) ** 2))
     assert mse < tolerance

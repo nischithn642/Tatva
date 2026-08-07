@@ -87,24 +87,77 @@ def quantize(model_ir: ModelIR) -> ModelIR:
     return ModelIR(mutated_mod, None, metadata)
 
 
+def check_softmax_fusable(model_ir: ModelIR) -> tuple[bool, str]:
+    """
+    Decide whether TATVA's replacement softmax kernel is valid for this graph.
+
+    The kernel assumes float32 data reduced along the last axis. Injecting it into a
+    graph that violates either assumption yields a binary that runs faster and computes
+    the wrong answer, which is worse than not optimizing at all -- so the pass refuses
+    rather than guesses. Returns (fusable, reason_if_not).
+    """
+    import tvm
+    from tvm import relax
+
+    seen = 0
+    for block in model_ir.mod["main"].body.blocks:
+        for binding in block.bindings:
+            call = binding.value
+            if not isinstance(call, relax.Call) or not isinstance(call.op, tvm.ir.Op):
+                continue
+            if "softmax" not in call.op.name:
+                continue
+
+            seen += 1
+            sinfo = call.args[0].struct_info
+            dtype = str(getattr(sinfo, "dtype", ""))
+            if dtype != "float32":
+                return False, f"softmax input is {dtype}; the TATVA kernel is float32-only"
+
+            shape = getattr(sinfo, "shape", None)
+            if shape is None:
+                return False, "softmax input has no static shape"
+            ndim = len(shape)
+            axis = int(getattr(call.attrs, "axis", -1))
+            if axis not in (-1, ndim - 1):
+                return False, (
+                    f"softmax reduces axis {axis} of a {ndim}-D tensor; "
+                    "the TATVA kernel only handles the last axis"
+                )
+
+    if seen == 0:
+        return False, "the graph contains no softmax operator to replace"
+    return True, ""
+
+
 def fuse_attention_softmax(model_ir: ModelIR) -> ModelIR:
     """
-    Fuses attention and softmax subgraphs into a custom optimized register-based single-pass
-    implementation. Applies the optimization only if the attention/softmax bottleneck pattern
-    is detected.
+    Request TATVA's Schraudolph fast-exponential softmax kernel for this model.
+
+    This does not rewrite the Relax graph. It sets a flag that runner.compile_model
+    acts on, replacing TVM's generated softmax kernels in the emitted C with TATVA's
+    own. The name is kept for API compatibility; see `softmax_fusion_skipped` in the
+    returned metadata when the pass declines to apply.
     """
     from tatva.compiler import analyze_graph
 
-    # Analyse the module to see if the attention/softmax bottleneck exists
+    metadata = model_ir.metadata.copy()
+    metadata.pop("softmax_optimized", None)
+    metadata.pop("softmax_fusion_skipped", None)
+
     report = analyze_graph(model_ir)
     if not report.has_transformer_bottleneck:
-        # Return untouched if pattern not detected
-        return model_ir
+        metadata["softmax_fusion_skipped"] = (
+            "no attention bottleneck detected (needs both a softmax and a matmul/dense)"
+        )
+        return ModelIR(model_ir.mod, None, metadata)
 
-    # Copy metadata and enable softmax_optimized flag
-    metadata = model_ir.metadata.copy()
+    fusable, reason = check_softmax_fusable(model_ir)
+    if not fusable:
+        metadata["softmax_fusion_skipped"] = reason
+        return ModelIR(model_ir.mod, None, metadata)
+
     metadata["softmax_optimized"] = True
-
     return ModelIR(model_ir.mod, None, metadata)
 
 
@@ -117,7 +170,7 @@ def compare_configs(
     """
     from tatva._cache import GLOBAL_SESSION_CACHE
     from tatva.compiler import import_model
-    from tatva.runner import ExecutionEnvironment, compile_model, run_and_measure
+    from tatva.runner import ExecutionEnvironment, compile_model, reference_output, run_and_measure
 
     pass_key = ",".join(sorted(passes or [])) + ":" + ",".join(sorted(configs or []))
     target_key = variant.name if hasattr(variant, "name") else str(variant)
@@ -128,6 +181,7 @@ def compare_configs(
 
     model_ir = import_model(onnx_path)
     results = {}
+    skipped: dict[str, str | None] = {}
 
     if "baseline" in configs:
         artifact_bl = compile_model(model_ir, variant, warmup_count=2, timed_count=5)
@@ -156,6 +210,7 @@ def compare_configs(
 
     if "fused" in configs:
         fused_model_ir = fuse_attention_softmax(model_ir)
+        skipped["fused"] = fused_model_ir.metadata.get("softmax_fusion_skipped")
         artifact_fused = compile_model(fused_model_ir, variant, warmup_count=2, timed_count=5)
         res_fused = run_and_measure(artifact_fused, environment=ExecutionEnvironment.QEMU_SIM)
 
@@ -173,6 +228,7 @@ def compare_configs(
         # Order of execution: fuse first (recommmended), then quantize
         if "fuse" in opt_passes:
             opt_model_ir = fuse_attention_softmax(opt_model_ir)
+            skipped["optimized"] = opt_model_ir.metadata.get("softmax_fusion_skipped")
         if "quantize" in opt_passes:
             opt_model_ir = quantize(opt_model_ir)
 
@@ -187,85 +243,76 @@ def compare_configs(
                 break
         results["optimized"] = {"latency": res_opt, "logits": opt_logits, "build_dir": artifact_opt.build_dir}
 
-    comparison = {}
+    # Ground truth is the host ONNX Runtime result, not the QEMU baseline.
+    # Scoring an optimized build against the baseline build only measures how far
+    # the two RISC-V binaries drift from each other; if the baseline itself were
+    # wrong, every optimized config would score a perfect zero MSE against it.
+    accuracy_tolerance = 0.05
+    ref_logits = [float(x) for x in reference_output(onnx_path)[:5]]
+    ref_arr = np.array(ref_logits)
+
+    def mse_vs_reference(logits: list[float]) -> float:
+        arr = np.array(logits)
+        if arr.shape != ref_arr.shape:
+            return float("inf")
+        return float(np.mean((ref_arr - arr) ** 2))
+
+    comparison: dict[str, Any] = {
+        "reference_logits": ref_logits,
+        "accuracy_reference": "host onnxruntime",
+        "tolerance": accuracy_tolerance,
+    }
+
     if "baseline" in results:
         bl_data = results["baseline"]
-        bl_logits_arr = np.array(bl_data["logits"])
+        mse_bl = mse_vs_reference(bl_data["logits"])
+        comparison.update({
+            "baseline_mean_ms": bl_data["latency"].mean_ms,
+            "baseline_median_ms": bl_data["latency"].median_ms,
+            "baseline_p95_ms": bl_data["latency"].p95_ms,
+            "baseline_accuracy_delta_mse": mse_bl,
+            "baseline_accuracy_ok": mse_bl <= accuracy_tolerance,
+        })
+        if mse_bl > accuracy_tolerance:
+            comparison["error_baseline"] = (
+                f"Baseline diverges from the host reference ({mse_bl:.5f} > {accuracy_tolerance}); "
+                "the optimized deltas below are measured against a baseline that is itself wrong."
+            )
 
+        for cfg, prefix, err_key in (
+            ("quantized", "quantized", "error"),
+            ("fused", "fused", "error_fused"),
+            ("optimized", "opt", "error_opt"),
+        ):
+            if cfg not in results:
+                continue
+            data = results[cfg]
+            mse = mse_vs_reference(data["logits"])
+            ok = mse <= accuracy_tolerance
+
+            comparison.update({
+                f"{prefix}_mean_ms": data["latency"].mean_ms,
+                f"{prefix}_median_ms": data["latency"].median_ms,
+                f"{prefix}_p95_ms": data["latency"].p95_ms,
+                f"{prefix}_mean_delta_ms": data["latency"].mean_ms - bl_data["latency"].mean_ms,
+                f"{prefix}_median_delta_ms": data["latency"].median_ms - bl_data["latency"].median_ms,
+                f"{prefix}_p95_delta_ms": data["latency"].p95_ms - bl_data["latency"].p95_ms,
+                f"{prefix}_accuracy_delta_mse": mse,
+                f"{prefix}_accuracy_ok": ok,
+            })
+            if skipped.get(cfg):
+                comparison[f"{prefix}_optimization_skipped"] = skipped[cfg]
+            if not ok:
+                comparison[err_key] = (
+                    f"{cfg.capitalize()} accuracy degradation exceeds tolerance "
+                    f"({mse:.5f} > {accuracy_tolerance})."
+                )
+
+        # Back-compat aliases: the quantize path historically used unprefixed keys.
         if "quantized" in results:
-            quant_data = results["quantized"]
-            quant_logits_arr = np.array(quant_data["logits"])
-
-            # Calculate Mean Squared Error (MSE) accuracy delta
-            mse_quant = float(np.mean((bl_logits_arr - quant_logits_arr) ** 2))
-            accuracy_tolerance = 0.05
-            accuracy_ok_quant = mse_quant <= accuracy_tolerance
-
-            comparison.update({
-                "baseline_mean_ms": bl_data["latency"].mean_ms,
-                "quantized_mean_ms": quant_data["latency"].mean_ms,
-                "latency_delta_ms": quant_data["latency"].mean_ms - bl_data["latency"].mean_ms,
-                "accuracy_delta_mse": mse_quant,
-                "accuracy_ok": accuracy_ok_quant,
-                "tolerance": accuracy_tolerance,
-            })
-
-            if not accuracy_ok_quant:
-                comparison["error"] = (
-                    f"Accuracy degradation exceeds tolerance ({mse_quant:.5f} > {accuracy_tolerance})."
-                )
-
-        if "fused" in results:
-            fused_data = results["fused"]
-            fused_logits_arr = np.array(fused_data["logits"])
-
-            # Calculate Mean Squared Error (MSE) accuracy delta for fusion
-            mse_fused = float(np.mean((bl_logits_arr - fused_logits_arr) ** 2))
-            # Schraudolph's exponential approximation has slightly more numerical error,
-            # but is expected to fall well within our 0.05 limit (typically ~0.0001)
-            accuracy_tolerance = 0.05
-            accuracy_ok_fused = mse_fused <= accuracy_tolerance
-
-            comparison.update({
-                "fused_mean_ms": fused_data["latency"].mean_ms,
-                "fused_median_ms": fused_data["latency"].median_ms,
-                "fused_p95_ms": fused_data["latency"].p95_ms,
-                "fused_mean_delta_ms": fused_data["latency"].mean_ms - bl_data["latency"].mean_ms,
-                "fused_median_delta_ms": fused_data["latency"].median_ms - bl_data["latency"].median_ms,
-                "fused_p95_delta_ms": fused_data["latency"].p95_ms - bl_data["latency"].p95_ms,
-                "fused_accuracy_delta_mse": mse_fused,
-                "fused_accuracy_ok": accuracy_ok_fused,
-            })
-
-            if not accuracy_ok_fused:
-                comparison["error_fused"] = (
-                    f"Fused accuracy degradation exceeds tolerance ({mse_fused:.5f} > {accuracy_tolerance})."
-                )
-
-        if "optimized" in results:
-            opt_data = results["optimized"]
-            opt_logits_arr = np.array(opt_data["logits"])
-
-            # Calculate Mean Squared Error (MSE) accuracy delta for optimized configuration
-            mse_opt = float(np.mean((bl_logits_arr - opt_logits_arr) ** 2))
-            accuracy_tolerance = 0.05
-            accuracy_ok_opt = mse_opt <= accuracy_tolerance
-
-            comparison.update({
-                "opt_mean_ms": opt_data["latency"].mean_ms,
-                "opt_median_ms": opt_data["latency"].median_ms,
-                "opt_p95_ms": opt_data["latency"].p95_ms,
-                "opt_mean_delta_ms": opt_data["latency"].mean_ms - bl_data["latency"].mean_ms,
-                "opt_median_delta_ms": opt_data["latency"].median_ms - bl_data["latency"].median_ms,
-                "opt_p95_delta_ms": opt_data["latency"].p95_ms - bl_data["latency"].p95_ms,
-                "opt_accuracy_delta_mse": mse_opt,
-                "opt_accuracy_ok": accuracy_ok_opt,
-            })
-
-            if not accuracy_ok_opt:
-                comparison["error_opt"] = (
-                    f"Optimized accuracy degradation exceeds tolerance ({mse_opt:.5f} > {accuracy_tolerance})."
-                )
+            comparison["latency_delta_ms"] = comparison["quantized_mean_delta_ms"]
+            comparison["accuracy_delta_mse"] = comparison["quantized_accuracy_delta_mse"]
+            comparison["accuracy_ok"] = comparison["quantized_accuracy_ok"]
 
     final_res = {"results": results, "comparison": comparison}
     GLOBAL_SESSION_CACHE.put_artifact(onnx_path, pass_key, target_key, final_res)
