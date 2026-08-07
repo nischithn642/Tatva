@@ -1,0 +1,68 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg
+*.egg-info/
+.installed.cfg
+
+# --- Environments ---
+.venv/
+_clean_env/
+env/
+venv/
+ENV/
+node_modules/
+
+# --- Packaging / build output ---
+build/
+build_opt/
+build_e2e/
+build_opt_quickstart/
+dist/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+
+# --- Compiler artifacts (generated into build dirs by tatva) ---
+*.o
+*.elf
+*.bin
+weights.h
+model_run.c
+model_info.h
+operators.c
+
+# --- Scratch: keep the helper scripts, drop the generated build dirs ---
+scratch/tatva_build_*/
+scratch/*.elf
+
+# --- Secrets (.env.example IS tracked; it is the template) ---
+.env
+!.env.example
+
+# --- Local backups & logs ---
+_backup/
+logs/*.log
+
+# --- Bundled toolchains: too large for git, fetched by setup_env.py ---
+qemu/
+riscv-toolchain/
+
+# --- Large model fixtures: small ones are tracked, these are not ---
+models/model_pretrained.onnx
+models/model_pretrained_quant.onnx
+models/model_medium.onnx
+models/model_medium_quant.onnx
+
+# --- Editor / OS ---
+.DS_Store
+Thumbs.db
+.idea/
+*.swp

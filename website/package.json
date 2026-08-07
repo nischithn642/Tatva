@@ -1,0 +1,17 @@
+{
+  "name": "tatva-website",
+  "version": "1.0.0",
+  "description": "TATVA Marketing Website and Contact Form Backend",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test tests/contactHandler.test.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.48.1",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "resend": "^4.1.2"
+  }
+}
