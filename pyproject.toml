@@ -4,10 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tatva-compiler"
-version = "0.1.0"
+version = "0.2.0"
 description = "TATVA: AI Model Compiler and Optimization Toolchain for RISC-V Processors"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 authors = [
     { name = "TATVA Authors" }
@@ -17,16 +17,25 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
     "click>=8.0.0,<9.0.0",
     "numpy>=1.24.0,<3.0.0",
     "onnx>=1.14.0,<2.0.0",
     "onnxruntime>=1.15.0,<2.0.0",
-    "apache-tvm>=0.10.0",
+    "apache-tvm>=0.25.0",
+    "apache-tvm-ffi>=0.1.12",
+    "python-dotenv>=1.0.0",
 ]
 
 [project.optional-dependencies]
+gui = [
+    "pywebview>=6.0.0",
+    "customtkinter>=5.2.0",
+    "pillow>=10.0.0",
+]
 dev = [
     "pytest>=7.0.0",
     "ruff",
@@ -42,20 +51,27 @@ exclude = [
   "/build",
   "/qemu",
   "/riscv-toolchain",
-  "/models",
   "/_backup",
   "/.git",
+  "/scratch",
   "__pycache__",
   "*.pyc",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/tatva"]
+packages = ["src/tatva", "src/scaffolding"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"website" = "tatva/website"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-norecursedirs = ["_backup", ".venv", "build", "dist"]
+norecursedirs = ["_backup", ".venv", "build", "dist", "scratch", "website"]
 markers = [
     "unit: Fast, toolchain-independent unit tests",
     "integration: Full compiler pipeline tests requiring toolchain & QEMU",
 ]
+
+[tool.ruff]
+line-length = 120
+exclude = [".venv", "_backup", "scratch", "build", "dist", "website"]

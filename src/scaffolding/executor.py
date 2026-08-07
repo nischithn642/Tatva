@@ -34,29 +34,27 @@ class ToolchainManager:
 
     @staticmethod
     def discover_gcc() -> Tuple[Optional[str], Optional[str]]:
-        """Find riscv64-unknown-elf-gcc, riscv-none-elf-gcc, or local toolchain binary."""
+        """
+        Find a RISC-V cross-compiler.
+
+        The bundled toolchain is checked FIRST so a host x86 'gcc' on PATH can never be
+        selected -- it would be invoked with -march=rv64gc* and fail in a confusing way.
+        Host gcc is never a valid fallback for a RISC-V cross-compile.
+        """
+        for exe in ("riscv-none-elf-gcc.exe", "riscv-none-elf-gcc"):
+            local_bin = os.path.join(PROJECT_DIR, "riscv-toolchain", "bin", exe)
+            if os.path.exists(local_bin):
+                return "riscv-none-elf-gcc", local_bin
+
         candidates = [
             "riscv64-unknown-elf-gcc",
             "riscv-none-elf-gcc",
             "riscv64-linux-gnu-gcc",
-            "gcc",
         ]
         for name in candidates:
-            path = shutil.which(name)
+            path = shutil.which(name) or shutil.which(name + ".exe")
             if path:
                 return name, path
-            path_exe = shutil.which(name + ".exe")
-            if path_exe:
-                return name, path_exe
-
-        # Check local project toolchain directory
-        local_bin = os.path.join(PROJECT_DIR, "riscv-toolchain", "bin", "riscv-none-elf-gcc.exe")
-        if os.path.exists(local_bin):
-            return "riscv-none-elf-gcc", local_bin
-
-        local_bin_no_exe = os.path.join(PROJECT_DIR, "riscv-toolchain", "bin", "riscv-none-elf-gcc")
-        if os.path.exists(local_bin_no_exe):
-            return "riscv-none-elf-gcc", local_bin_no_exe
 
         return None, None
 
@@ -147,10 +145,13 @@ class ScaffoldingExecutor:
             elapsed_ms = (time.time() - start_t) * 1000.0
             return ExecutionResult(
                 stage=stage,
-                success=True,
-                return_code=0,
-                stdout="[TATVA HARDWARE SIMULATOR LOG]\nSimulation complete. Total Cycles: 41,890 | Vector Utilization: 94.2%\n",
-                stderr="",
+                success=False,
+                return_code=127,
+                stdout="",
+                stderr=(
+                    f"Executable not found: '{cmd[0] if cmd else '<empty command>'}'. "
+                    f"Install the RISC-V toolchain or run 'tatva doctor'. ({e})"
+                ),
                 execution_time_ms=round(elapsed_ms, 2),
             )
         except Exception as e:
@@ -165,10 +166,20 @@ class ScaffoldingExecutor:
             )
 
     def compile_workspace(self, workspace_dir: str, target: str = "RV64GCV") -> ExecutionResult:
-        """Cross-compile workspace files using riscv64-gcc or fallback gcc."""
+        """Cross-compile workspace files with the RISC-V toolchain."""
         gcc_name, gcc_path = ToolchainManager.discover_gcc()
         if not gcc_path:
-            gcc_path = shutil.which("gcc") or shutil.which("gcc.exe") or "gcc"
+            return ExecutionResult(
+                stage="compilation",
+                success=False,
+                return_code=127,
+                stdout="",
+                stderr=(
+                    "No RISC-V cross-compiler found. Expected 'riscv-none-elf-gcc' on PATH or under "
+                    "'riscv-toolchain/bin/'. Run 'python setup_env.py' or 'tatva doctor'."
+                ),
+                execution_time_ms=0.0,
+            )
 
         src_main = os.path.join(workspace_dir, "src", "main.c")
         src_inf = os.path.join(workspace_dir, "src", "model_inference.c")
@@ -202,25 +213,42 @@ class ScaffoldingExecutor:
         return self.run_subprocess(cmd, cwd=workspace_dir, stage="compilation")
 
     def emulate_workspace(self, workspace_dir: str, target: str = "RV64GCV") -> ExecutionResult:
-        """Emulate cross-compiled ELF binary in QEMU."""
+        """Emulate the cross-compiled ELF under QEMU system mode."""
         out_elf = os.path.join(workspace_dir, "build_app.elf")
-        qemu_name, qemu_path = ToolchainManager.discover_qemu()
+        bitness = 32 if "32" in target else 64
+        qemu_name, qemu_path = ToolchainManager.discover_qemu(bitness)
 
-        if not qemu_path or not os.path.exists(out_elf):
-            py_test = os.path.join(workspace_dir, "tests", "test_parity.py")
-            if os.path.exists(py_test):
-                return self.run_subprocess(
-                    [sys.executable, "-m", "pytest", py_test], cwd=workspace_dir, stage="emulation"
-                )
-
+        if not qemu_path:
             return ExecutionResult(
                 stage="emulation",
-                success=True,
-                return_code=0,
-                stdout="[QEMU SIMULATION LOG]\nEmulation completed with 0 runtime errors.\nCycles: 142,080 | Parity: OK\n",
-                stderr="",
-                execution_time_ms=12.4,
+                success=False,
+                return_code=127,
+                stdout="",
+                stderr=(
+                    f"qemu-system-riscv{bitness} not found. Expected on PATH or under 'qemu/bin/'. "
+                    "Run 'python setup_env.py' or 'tatva doctor'."
+                ),
+                execution_time_ms=0.0,
             )
 
-        cmd = [qemu_path, out_elf]
+        if not os.path.exists(out_elf):
+            return ExecutionResult(
+                stage="emulation",
+                success=False,
+                return_code=1,
+                stdout="",
+                stderr=f"No ELF to emulate: '{out_elf}' does not exist (compilation must run first).",
+                execution_time_ms=0.0,
+            )
+
+        # System-mode QEMU needs a machine, a kernel image and no graphical console.
+        cpu = "rv64,v=true,vext_spec=v1.0" if bitness == 64 and "V" in target.upper() else f"rv{bitness}"
+        cmd = [
+            qemu_path,
+            "-M", "virt",
+            "-cpu", cpu,
+            "-nographic",
+            "-bios", "none",
+            "-kernel", out_elf,
+        ]
         return self.run_subprocess(cmd, cwd=workspace_dir, stage="emulation")

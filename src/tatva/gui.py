@@ -1254,16 +1254,28 @@ class TatvaPyBridge:
         try:
             from scaffolding.executor import ToolchainManager
             return ToolchainManager.get_health_status()
-        except Exception:
-            return {"gcc": True, "qemu": True, "status_badge": "🟢 Toolchain Ready"}
+        except Exception as e:
+            # Never claim a healthy toolchain we could not actually probe.
+            return {
+                "gcc": False,
+                "gcc_name": "Unknown",
+                "gcc_path": "",
+                "qemu": False,
+                "qemu_name": "Unknown",
+                "qemu_path": "",
+                "cmake": False,
+                "make": False,
+                "status_badge": "🔴 Toolchain probe failed",
+                "error": f"Could not probe toolchain: {e}",
+            }
 
     def get_ollama_models(self) -> List[str]:
+        """Return models the local Ollama server actually reports. Empty if it is not running."""
         try:
             from scaffolding.llm_provider import get_local_ollama_models
-            models = get_local_ollama_models()
-            return models if models else ["qwen2.5-coder:7b", "deepseek-coder-v2"]
+            return get_local_ollama_models()
         except Exception:
-            return ["qwen2.5-coder:7b", "deepseek-coder-v2"]
+            return []
 
     def fetch_nvidia_models(self, api_key: str = "") -> Dict[str, Any]:
         """Fetch live NVIDIA model catalog via PyBridge."""
@@ -1298,27 +1310,75 @@ class TatvaPyBridge:
             ".h5": "HDF5 Model",
         }
         framework = framework_map.get(ext, "Neural Net Model")
-        
+
         try:
             with open(model_path, "rb") as f:
-                sha256 = hashlib.sha256(f.read(4096)).hexdigest()[:12]
-        except Exception:
-            sha256 = "a1b2c3d4e5f6"
+                sha256 = hashlib.sha256(f.read()).hexdigest()[:12]
+        except Exception as e:
+            return {"valid": False, "error": f"Could not read '{model_path}': {e}"}
+
+        # Real op count / bottleneck detection, read straight from the ONNX graph.
+        # Unknown stays unknown -- we do not invent a layer count.
+        layer_count = "unknown"
+        has_bottleneck: Optional[bool] = None
+        parse_error = ""
+        if ext == ".onnx":
+            try:
+                import onnx
+
+                graph = onnx.load(model_path).graph
+                op_types = [n.op_type for n in graph.node]
+                layer_count = f"{len(op_types)} Ops"
+                has_bottleneck = "Softmax" in op_types and any(
+                    t in op_types for t in ("MatMul", "Gemm")
+                )
+            except Exception as e:
+                parse_error = f"ONNX graph could not be parsed: {e}"
 
         return {
             "valid": True,
             "filename": os.path.basename(model_path),
             "framework": framework,
             "size_mb": size_mb,
-            "status": "Ready for Step 1",
-            "layer_count": "142 Ops",
+            "status": "Ready for Step 1" if not parse_error else "Loaded (graph unreadable)",
+            "layer_count": layer_count,
             "sha256": f"0x{sha256}...",
-            "has_bottleneck": True,
-            "error": "",
+            "has_bottleneck": has_bottleneck,
+            "error": parse_error,
         }
 
     def verify_toolchain_configuration(self, target_name: str) -> Dict[str, Any]:
-        return {"status": "ok", "error": ""}
+        """Actually probe GCC and QEMU for the requested target."""
+        try:
+            from tatva.compiler import TARGETS
+            from tatva.runner import find_qemu, find_riscv_gcc
+
+            variant = TARGETS.get(target_name)
+            if variant is None:
+                return {
+                    "status": "error",
+                    "error": f"Unknown target '{target_name}'. Known targets: {', '.join(sorted(TARGETS))}.",
+                }
+
+            missing = []
+            _, gcc_path = find_riscv_gcc()
+            if not gcc_path:
+                missing.append("RISC-V GCC")
+
+            bitness = 32 if "32" in variant.name else 64
+            _, qemu_path = find_qemu(bitness)
+            if not qemu_path:
+                missing.append(f"qemu-system-riscv{bitness}")
+
+            if missing:
+                return {
+                    "status": "error",
+                    "error": f"Missing toolchain component(s): {', '.join(missing)}. Run 'tatva doctor' for details.",
+                }
+
+            return {"status": "ok", "error": "", "gcc_path": gcc_path, "qemu_path": qemu_path}
+        except Exception as e:
+            return {"status": "error", "error": f"Toolchain verification failed: {e}"}
 
     def scan_hardware_boards(self) -> Dict[str, Any]:
         return {"found": False, "status": "SIMULATION MODE — QEMU results only"}
@@ -1338,26 +1398,59 @@ class TatvaPyBridge:
                 "has_transformer_bottleneck": getattr(stats, "has_transformer_bottleneck", False),
             }
         except Exception as e:
-            return {"filename": os.path.basename(model_path), "total_ops": 142, "status": f"Loaded ({e})"}
+            return {"filename": os.path.basename(model_path), "error": f"Analysis failed: {e}"}
 
     def run_pipeline(self, model_path: str, target_name: str, fuse_softmax: bool = True, do_quantize: bool = False) -> Dict[str, Any]:
-        fn = os.path.basename(model_path) if model_path else "pre_trained_model"
+        """
+        Compile and measure BOTH the baseline and the optimized configuration under QEMU.
+
+        Every number returned here comes from an actual emulated run. There is no
+        estimation path and no simulated fallback: if the pipeline cannot run, this
+        reports the failure instead of inventing a result.
+        """
+        if not model_path or not os.path.exists(model_path):
+            return {"success": False, "error": f"Model file not found: '{model_path}'"}
+
+        passes: List[str] = []
+        if fuse_softmax:
+            passes.append("fuse")
+        if do_quantize:
+            passes.append("quantize")
+
         try:
             from tatva.compiler import TARGETS
-            from tatva.runner import establish_baseline
-            variant = TARGETS.get(target_name, TARGETS.get("RV64GCV"))
-            base_res = establish_baseline(model_path, variant)
-            base_ms = base_res.latency_result.mean_ms if hasattr(base_res, "latency_result") else 48.2
-            opt_ms = base_ms * 0.42
-            speedup = round(((base_ms - opt_ms) / base_ms) * 100.0, 2)
-            
+            from tatva.optimizer import compare_configs
+
+            variant = TARGETS.get(target_name)
+            if variant is None:
+                return {
+                    "success": False,
+                    "error": f"Unknown target '{target_name}'. Known targets: {', '.join(sorted(TARGETS))}.",
+                }
+
+            configs = ["baseline"] + (["optimized"] if passes else [])
+            res = compare_configs(model_path, variant, configs, passes=passes)
+            comp = res["comparison"]
+
+            base_ms = res["results"]["baseline"]["latency"].mean_ms
+            if passes:
+                opt_ms = comp["opt_mean_ms"]
+                mse = comp["opt_accuracy_delta_mse"]
+                accuracy_ok = comp["opt_accuracy_ok"]
+            else:
+                # No passes selected: baseline is the only measurement we have.
+                opt_ms, mse, accuracy_ok = base_ms, 0.0, True
+
+            speedup = round(((base_ms - opt_ms) / base_ms) * 100.0, 2) if base_ms else 0.0
+
             digest = (
                 f"=== TATVA RISC-V OPTIMIZATION PIPELINE EXECUTION ===\n"
-                f"Target Architecture : {target_name}\n"
+                f"Target Architecture : {variant.name} ({variant.gcc_march})\n"
                 f"Model File Path     : {model_path}\n"
                 f"Softmax Fusion Pass : {'ENABLED' if fuse_softmax else 'DISABLED'}\n"
                 f"INT8 Quant Pass     : {'ENABLED' if do_quantize else 'DISABLED'}\n"
-                f"Compiler Backend    : LLVM RISC-V Codegen Engine"
+                f"Compiler Backend    : TVM Relax -> C -> riscv-none-elf-gcc\n"
+                f"Measurement         : QEMU system-mode, rdcycle, -icount shift=0"
             )
 
             return {
@@ -1370,48 +1463,40 @@ class TatvaPyBridge:
                 "baseline_ms": round(base_ms, 2),
                 "optimized_ms": round(opt_ms, 2),
                 "speedup_pct": speedup,
-                "mse": 0.0004,
-                "status": "PASS [OK]",
+                "mse": mse,
+                "accuracy_ok": accuracy_ok,
+                "measured": True,
+                "status": "PASS [OK]" if accuracy_ok else "FAIL [accuracy outside tolerance]",
             }
         except Exception as e:
-            digest = (
-                f"=== TATVA RISC-V OPTIMIZATION PIPELINE EXECUTION (SIMULATION MODE) ===\n"
-                f"Target Architecture : {target_name}\n"
-                f"Model File Path     : {model_path}\n"
-                f"Softmax Fusion Pass : {'ENABLED' if fuse_softmax else 'DISABLED'}\n"
-                f"INT8 Quant Pass     : {'ENABLED' if do_quantize else 'DISABLED'}\n"
-                f"Note                : {e}"
-            )
             return {
-                "success": True,
-                "error": "",
-                "config_digest": digest,
-                "base_ms": 48.2,
-                "opt_ms": 20.3,
-                "speedup": 57.8,
-                "baseline_ms": 48.2,
-                "optimized_ms": 20.3,
-                "speedup_pct": 57.8,
-                "mse": 0.0004,
-                "status": "PASS [OK] (Simulation Mode)",
+                "success": False,
+                "measured": False,
+                "error": f"Pipeline failed: {e}",
+                "config_digest": (
+                    f"=== TATVA RISC-V OPTIMIZATION PIPELINE — FAILED ===\n"
+                    f"Target Architecture : {target_name}\n"
+                    f"Model File Path     : {model_path}\n"
+                    f"Failure             : {e}"
+                ),
+                "status": "ERROR",
             }
 
     def run_autonomous_loop(self, prompt_text: str, target_name: str, model_name: str) -> Dict[str, Any]:
         try:
             from scaffolding.loop_agent import LoopAgent
             agent = LoopAgent()
-            res = agent.run_autonomous_loop(prompt_text=prompt_text, target=target_name, model_name=model_name)
-            return res
+            return agent.run_autonomous_loop(
+                prompt_text=prompt_text, target=target_name, model_name=model_name
+            )
         except Exception as e:
             return {
-                "success": True,
+                "success": False,
+                "error": f"Autonomous loop failed: {e}",
                 "project_name": "tatva_riscv_antigravity_starter",
-                "attempts_used": 1,
+                "attempts_used": 0,
                 "cumulative_cost_usd": 0.0,
-                "files": [
-                    {"path": "src/main.c", "content": f"/* Auto-generated for: {prompt_text} */\n#include <stdio.h>\nint main() {{ printf(\"Hello RVV!\\n\"); return 0; }}"},
-                    {"path": "README.md", "content": f"# Starter Project\nTarget: {target_name}"},
-                ],
+                "files": [],
             }
 
 
@@ -1428,7 +1513,8 @@ def launch_gui() -> None:
         if not os.path.exists(html_path):
             html_path = os.path.abspath(os.path.join(_CURRENT_DIR, "..", "website", "index.html"))
 
-    target_url = f"file:///{os.path.abspath(html_path).replace('\\', '/')}"
+    _normalized_html_path = os.path.abspath(html_path).replace(os.sep, "/")
+    target_url = f"file:///{_normalized_html_path}"
 
     try:
         import webview

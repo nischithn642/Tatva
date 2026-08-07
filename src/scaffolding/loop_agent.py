@@ -27,6 +27,7 @@ class LoopAgent:
         self.llm_provider = llm_provider or LLMProvider()
         self.executor = executor or ScaffoldingExecutor()
         self.max_attempts = max_attempts
+        self.cumulative_cost_usd: float = 0.0
 
     def run_autonomous_loop(
         self,
@@ -44,6 +45,7 @@ class LoopAgent:
             if log_callback:
                 log_callback(msg)
 
+        self.cumulative_cost_usd = 0.0
         log("🚀 Starting Tatva Antigravity Engine — Autonomous Closed-Loop Cycle")
         log(f"  Target: {target} | LLM Backend: {model_name} | Max Attempts: {self.max_attempts}")
 
@@ -51,7 +53,6 @@ class LoopAgent:
         try:
             workspace_files = self._generate_initial_workspace(prompt_text, target)
             current_attempt = 1
-            cumulative_cost = 0.0
             last_exec_result: Optional[ExecutionResult] = None
 
             while current_attempt <= self.max_attempts:
@@ -67,13 +68,18 @@ class LoopAgent:
                     log(f"     {comp_res.stderr[:300]}")
 
                     if current_attempt < self.max_attempts:
-                        log(f"  🤖 Triggering Autonomous LLM Self-Correction Feedback Loop...")
+                        log("  🤖 Triggering Autonomous LLM Self-Correction Feedback Loop...")
                         fix_prompt = self._construct_feedback_prompt(
                             "compilation", comp_res, prompt_text, workspace_files
                         )
+                        before = dict(workspace_files)
                         workspace_files = self._apply_self_correction(
-                            fix_prompt, model_name, api_key, workspace_files
+                            fix_prompt, model_name, api_key, workspace_files, log
                         )
+                        if workspace_files == before:
+                            log("  ⛔ Workspace unchanged — retrying would repeat this failure. Stopping.")
+                            last_exec_result = comp_res
+                            break
                         current_attempt += 1
                         continue
                     else:
@@ -91,13 +97,18 @@ class LoopAgent:
                     log(f"     {emu_res.stderr[:300]}")
 
                     if current_attempt < self.max_attempts:
-                        log(f"  🤖 Triggering Autonomous LLM Self-Correction Feedback Loop...")
+                        log("  🤖 Triggering Autonomous LLM Self-Correction Feedback Loop...")
                         fix_prompt = self._construct_feedback_prompt(
                             "emulation", emu_res, prompt_text, workspace_files
                         )
+                        before = dict(workspace_files)
                         workspace_files = self._apply_self_correction(
-                            fix_prompt, model_name, api_key, workspace_files
+                            fix_prompt, model_name, api_key, workspace_files, log
                         )
+                        if workspace_files == before:
+                            log("  ⛔ Workspace unchanged — retrying would repeat this failure. Stopping.")
+                            last_exec_result = emu_res
+                            break
                         current_attempt += 1
                         continue
                     else:
@@ -107,10 +118,15 @@ class LoopAgent:
                 log("  ✅ QEMU Emulation Succeeded! 0 core dumps or exceptions.")
 
                 # Step C: Parity & Metrics Verification
-                log("  [3/3 Parity & Verification] Verifying output tensor parity...")
-                log("  ✅ Parity Verification Passed! 100% numerical match.")
+                #
+                # NOTE: the generated starter workspace has no reference output to compare
+                # against, so there is nothing to verify numerically here. We report that
+                # honestly rather than claiming a match that was never computed.
+                log("  [3/3 Parity & Verification] Skipped — scaffolded starter projects")
+                log("      carry no reference outputs. Use 'tatva optimize' on a real")
+                log("      .onnx model for verified numerical parity against ONNX Runtime.")
 
-                last_exec_result = comp_res
+                last_exec_result = emu_res
                 log(f"\n🎉 Closed-Loop Cycle Completed Successfully in Attempt {current_attempt}!")
                 break
 
@@ -119,13 +135,17 @@ class LoopAgent:
             ]
 
             return {
-                "success": (last_exec_result.success if last_exec_result else True),
+                "success": (last_exec_result.success if last_exec_result else False),
                 "project_name": "tatva_riscv_antigravity_starter",
                 "target": target,
                 "attempts_used": min(current_attempt, self.max_attempts),
-                "cumulative_cost_usd": cumulative_cost,
+                "cumulative_cost_usd": round(self.cumulative_cost_usd, 6),
                 "files": files_list,
-                "workspace_dir": temp_dir,
+                # The sandbox is deleted below; files are returned in-memory above.
+                # Callers must write them somewhere durable themselves.
+                "workspace_dir": None,
+                "last_stage": last_exec_result.stage if last_exec_result else None,
+                "last_stderr": (last_exec_result.stderr[:2000] if last_exec_result else ""),
             }
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -154,26 +174,49 @@ class LoopAgent:
         model_name: str,
         api_key: Optional[str],
         current_files: Dict[str, str],
+        log: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, str]:
-        """Query LLM for updated files or apply deterministic correction."""
+        """
+        Query the LLM for corrected files.
+
+        Failures are reported, not swallowed: a silent failure here looks identical to a
+        successful correction and makes the loop appear to work when it never ran.
+        """
+        def _log(msg: str) -> None:
+            if log:
+                log(msg)
+
         try:
-            res_text, _ = self.llm_provider.query(
+            res_text, cost = self.llm_provider.query(
                 prompt=fix_prompt,
                 system_prompt="You are Tatva's Autonomous RISC-V Self-Correction Agent.",
                 messages=[],
                 model_name=model_name,
                 api_key=api_key,
             )
-            # Parse updated files from LLM text if JSON present
+            self.cumulative_cost_usd += cost or 0.0
+        except Exception as e:
+            _log(f"     ⚠ Self-correction unavailable: {e}")
+            _log("     Workspace left unchanged; the next attempt would repeat this failure.")
+            return current_files
+
+        # Parse updated files from LLM text if JSON present
+        try:
             if "{" in res_text and "}" in res_text:
                 import json
                 s = res_text[res_text.find("{") : res_text.rfind("}") + 1]
                 data = json.loads(s)
-                if "files" in data:
-                    for f in data["files"]:
-                        current_files[f["path"]] = f["content"]
-        except Exception:
-            pass
+                files = data.get("files") or []
+                if not files:
+                    _log("     ⚠ LLM response contained no 'files' payload; workspace unchanged.")
+                for f in files:
+                    current_files[f["path"]] = f["content"]
+                if files:
+                    _log(f"     Applied {len(files)} corrected file(s).")
+            else:
+                _log("     ⚠ LLM response was not JSON; workspace unchanged.")
+        except Exception as e:
+            _log(f"     ⚠ Could not parse LLM correction ({e}); workspace unchanged.")
 
         return current_files
 
@@ -253,13 +296,18 @@ make -j4
 qemu-system-riscv64 -M virt -cpu rv64,v=true,vext_spec=v1.0 -nographic -kernel build/build_app.elf
 """,
             "tests/test_parity.py": '''\
-/*
- * Numerical Parity Verification Test Suite.
- */
+"""
+Numerical Parity Verification Test Suite.
+
+These are placeholders. Replace the bodies with real comparisons against a
+reference implementation before trusting them.
+"""
 import pytest
 
+
+@pytest.mark.skip(reason="Placeholder: no reference output wired up yet.")
 def test_numerical_parity():
-    assert True
+    raise NotImplementedError("Compare model output against a reference run here.")
 ''',
             "CMakeLists.txt": """\
 cmake_minimum_required(VERSION 3.10)
