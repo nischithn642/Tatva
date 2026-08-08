@@ -14,6 +14,7 @@ from unittest.mock import patch
 import pytest
 from click.testing import CliRunner
 
+from scaffolding.executor import ToolchainManager
 from tatva.cli import cli
 from tatva.runner import find_qemu, find_riscv_gcc
 from tatva.toolchain import (
@@ -35,6 +36,17 @@ def tools_root(tmp_path, monkeypatch):
     root = tmp_path / "tools"
     monkeypatch.setenv("TATVA_TOOLS_DIR", str(root))
     return root
+
+
+@pytest.fixture
+def no_repo_toolchain(tmp_path, monkeypatch):
+    """
+    Ignore any real toolchain sitting in `<repo>/riscv-toolchain`.
+
+    A developer machine that has actually run `tatva setup` has one, and it would
+    satisfy searches these tests need to come up empty.
+    """
+    monkeypatch.setattr("tatva.runner.PROJECT_DIR", str(tmp_path / "no-repo"))
 
 
 def _plant_fake_exe(tools_root, install_name: str, exe: str) -> str:
@@ -199,6 +211,60 @@ def test_legacy_repo_toolchain_directory_is_still_searched(tmp_path, monkeypatch
         _name, path = find_riscv_gcc()
 
     assert os.path.samefile(path, str(exe))
+
+
+@pytest.mark.unit
+def test_the_bundled_compiler_is_reported_under_its_real_name(tools_root, no_repo_toolchain) -> None:
+    """
+    Diagnostics prints this name next to the resolved path. It used to print
+    riscv-none-elf-gcc for every bundled hit, including a riscv64-unknown-elf-gcc one.
+    """
+    gcc = _plant_fake_exe(tools_root, "riscv-none-elf-gcc", "riscv64-unknown-elf-gcc")
+
+    with patch("shutil.which", return_value=None):
+        name, path = find_riscv_gcc()
+
+    assert name == "riscv64-unknown-elf-gcc"
+    assert os.path.samefile(path, gcc)
+
+
+@pytest.mark.unit
+def test_diagnostics_reports_exactly_what_the_build_will_run(tools_root, no_repo_toolchain) -> None:
+    """
+    The health check and stage 05 must resolve the same binaries.
+
+    They did not, and that produced the worst failure shape available: Diagnostics
+    green, no preflight warning, then the build dying on
+    "RISC-V GCC cross-compiler binary not found."
+    """
+    _plant_fake_exe(tools_root, "riscv-none-elf-gcc", "riscv-none-elf-gcc")
+    _plant_fake_exe(tools_root, "qemu-riscv", "qemu-system-riscv64")
+
+    with patch("shutil.which", return_value=None):
+        health = ToolchainManager.get_health_status()
+        gcc_name, gcc_path = find_riscv_gcc()
+        qemu_name, qemu_path = find_qemu(64)
+
+    assert (health["gcc_name"], health["gcc_path"]) == (gcc_name, gcc_path)
+    assert (health["qemu_name"], health["qemu_path"]) == (qemu_name, qemu_path)
+    assert health["gcc"] and health["qemu"]
+
+
+@pytest.mark.unit
+def test_a_linux_cross_compiler_is_not_counted_as_a_toolchain(tools_root, no_repo_toolchain) -> None:
+    """
+    riscv64-linux-gnu-gcc is the common apt/WSL package. It targets Linux userspace and
+    cannot link -ffreestanding -nostdlib against start.S, so it must not turn the badge
+    green. Same for user-mode qemu-riscv64, which cannot boot the ELF to read rdcycle.
+    """
+    installed = {"riscv64-linux-gnu-gcc": "/usr/bin/riscv64-linux-gnu-gcc", "qemu-riscv64": "/usr/bin/qemu-riscv64"}
+
+    with patch("shutil.which", side_effect=lambda name: installed.get(name)):
+        health = ToolchainManager.get_health_status()
+
+    assert health["gcc"] is False
+    assert health["qemu"] is False
+    assert "🔴" in health["status_badge"]
 
 
 @pytest.mark.unit

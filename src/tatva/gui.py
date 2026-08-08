@@ -28,10 +28,12 @@ if _SRC_DIR not in sys.path:
 # ── Build Metadata ────────────────────────────────────────────────────────────
 # Read from the package rather than restated here. A hardcoded string in this file
 # is a string that goes stale the moment anyone bumps the real version.
-from tatva import __version__  # noqa: E402
+from tatva import DISPLAY_VERSION, __version__  # noqa: E402
 
-BUILD_VERSION = f"v{__version__}"
-BUILD_LABEL = BUILD_VERSION
+# The badge shows the friendly name ("Beta 2.0"); __version__ stays PEP 440 for
+# packaging. Both come from tatva/__init__.py so there is still one source of truth.
+BUILD_VERSION = DISPLAY_VERSION
+BUILD_LABEL = f"{DISPLAY_VERSION} · {__version__}"
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Deferred module containers (populated during splash screen)
@@ -116,7 +118,7 @@ class SplashWindow(tk.Toplevel):
         style.configure(
             "GreenGlow.Horizontal.TProgressbar",
             troughcolor="#1E1E20",
-            background="#A8C7FA",
+            background="#EBB85F",   # brand gold, matching the web splash
             bordercolor="#282A2C",
             thickness=4,
         )
@@ -138,39 +140,82 @@ class SplashWindow(tk.Toplevel):
 
         threading.Thread(target=self._run_loader, daemon=True).start()
 
+    def _logo_path(self) -> str:
+        """Locate the wordmark, whether running frozen, installed, or from a checkout."""
+        candidates = [
+            os.path.join(getattr(sys, "_MEIPASS", ""), "assets", "logo-dark.png"),
+            os.path.join(_CURRENT_DIR, "assets", "logo-dark.png"),
+            os.path.join(_CURRENT_DIR, "..", "..", "assets", "logo-dark.png"),
+            os.path.join(_CURRENT_DIR, "..", "assets", "logo-dark.png"),
+        ]
+        for path in candidates:
+            if path and os.path.exists(path):
+                return os.path.abspath(path)
+        return ""
+
     def _draw_tatva_logo(self) -> None:
+        """
+        Show the real wordmark.
+
+        This used to hand-draw five letterforms out of canvas line segments, in the old
+        blue. That meant the splash carried a different logo from every other surface,
+        and a brand change had to be made twice. Tk 8.6 reads PNG natively, so the
+        shipped asset can just be displayed -- with the drawn version kept only as a
+        fallback for the case where the asset is genuinely missing.
+        """
         c = self.canvas
         c.delete("all")
 
-        cx = 110
-        cy = 110
+        path = self._logo_path()
+        if path:
+            try:
+                image = tk.PhotoImage(file=path)
+                # Integer subsampling only -- Tk has no smooth scaler, and a non-integer
+                # factor would alias the thin strokes in the letterforms.
+                factor = max(1, round(image.width() / 320))
+                if factor > 1:
+                    image = image.subsample(factor, factor)
+                # Held on the instance: Tk keeps only a weak reference and a local would
+                # be collected before the canvas paints, leaving an empty box.
+                self._logo_image = image
+                c.create_image(290, 110, image=image)
+                return
+            except Exception:
+                pass
 
-        c.create_line(cx - 20, cy - 25, cx + 20, cy - 25, fill="#FFFFFF", width=3, capstyle=tk.ROUND)
-        c.create_line(cx, cy - 25, cx, cy + 25, fill="#FFFFFF", width=3, capstyle=tk.ROUND)
+        self._draw_tatva_logo_fallback()
 
-        cx += 70
-        c.create_line(cx - 22, cy + 25, cx, cy - 25, fill="#FFFFFF", width=3, capstyle=tk.ROUND)
-        c.create_line(cx, cy - 25, cx + 22, cy + 25, fill="#FFFFFF", width=3, capstyle=tk.ROUND)
-        c.create_polygon(cx - 8, cy + 18, cx + 8, cy + 18, cx, cy + 8, fill="#A8C7FA", outline="#A8C7FA")
+    def _draw_tatva_logo_fallback(self) -> None:
+        """Vector stand-in used only when the logo asset cannot be loaded."""
+        c = self.canvas
+        gold = "#EBB85F"
+        cx, cy = 110, 110
 
-        cx += 70
-        c.create_line(cx - 20, cy - 25, cx + 20, cy - 25, fill="#FFFFFF", width=3, capstyle=tk.ROUND)
-        c.create_line(cx, cy - 25, cx, cy + 25, fill="#FFFFFF", width=3, capstyle=tk.ROUND)
+        def letter_t(x: int) -> None:
+            c.create_line(x - 20, cy - 25, x + 20, cy - 25, fill="#FFFFFF", width=3, capstyle=tk.ROUND)
+            c.create_line(x, cy - 25, x, cy + 25, fill="#FFFFFF", width=3, capstyle=tk.ROUND)
 
-        cx += 70
-        c.create_line(cx - 22, cy - 25, cx, cy + 25, fill="#FFFFFF", width=3, capstyle=tk.ROUND)
-        c.create_line(cx, cy + 25, cx + 22, cy - 25, fill="#FFFFFF", width=3, capstyle=tk.ROUND)
+        def letter_a(x: int) -> None:
+            c.create_line(x - 22, cy + 25, x, cy - 25, fill="#FFFFFF", width=3, capstyle=tk.ROUND)
+            c.create_line(x, cy - 25, x + 22, cy + 25, fill="#FFFFFF", width=3, capstyle=tk.ROUND)
+            c.create_polygon(x - 8, cy + 18, x + 8, cy + 18, x, cy + 8, fill=gold, outline=gold)
 
-        cx += 70
-        c.create_line(cx - 22, cy + 25, cx, cy - 25, fill="#FFFFFF", width=3, capstyle=tk.ROUND)
-        c.create_line(cx, cy - 25, cx + 22, cy + 25, fill="#FFFFFF", width=3, capstyle=tk.ROUND)
-        c.create_polygon(cx - 8, cy + 18, cx + 8, cy + 18, cx, cy + 8, fill="#A8C7FA", outline="#A8C7FA")
+        letter_t(cx)
+        letter_a(cx + 70)
+        letter_t(cx + 140)
 
-        tx = cx + 22
-        ty = cy - 25
-        c.create_line(tx, ty, tx + 60, ty, fill="#3858A2", width=2)
-        c.create_line(tx, ty, tx + 35, ty, fill="#A8C7FA", width=2.5)
-        c.create_oval(tx - 3, ty - 3, tx + 3, ty + 3, fill="#C2E7FF", outline="#A8C7FA")
+        # V
+        vx = cx + 210
+        c.create_line(vx - 22, cy - 25, vx, cy + 25, fill="#FFFFFF", width=3, capstyle=tk.ROUND)
+        c.create_line(vx, cy + 25, vx + 22, cy - 25, fill="#FFFFFF", width=3, capstyle=tk.ROUND)
+
+        letter_a(cx + 280)
+
+        # The comet above the final A.
+        tx, ty = cx + 302, cy - 25
+        c.create_line(tx, ty, tx + 60, ty, fill="#7A5A18", width=2)
+        c.create_line(tx, ty, tx + 35, ty, fill=gold, width=2)
+        c.create_oval(tx - 3, ty - 3, tx + 3, ty + 3, fill="#F6D08A", outline=gold)
 
     def _run_loader(self) -> None:
         load_backend_libraries(self._on_loaded)
@@ -1253,19 +1298,48 @@ class TatvaPyBridge:
     Exposes compiler, runner, optimizer, and Antigravity closed-loop engine to website/index.html frontend.
     """
 
+    def __init__(self) -> None:
+        # Guards the toolchain-install state, which a worker thread writes and the
+        # UI thread polls.
+        self._install_lock = threading.Lock()
+        self._install_state: dict[str, Any] = {
+            "running": False,
+            "done": False,
+            "ok": False,
+            "component": "",
+            "label": "",
+            "read": 0,
+            "total": 0,
+            "log": [],
+            "error": "",
+        }
+
     def select_file(self) -> str:
-        """Open native file browser dialog for model file selection."""
+        """
+        Open a native file browser for model selection.
+
+        Cancelling has to be distinguishable from failing. The previous version returned
+        early only when a path came back, so pressing Cancel on the native dialog fell
+        through to the Tkinter block below and immediately opened a *second* dialog --
+        in a different toolkit, with a different title, that the user then had to cancel
+        as well. Tk is a fallback for "pywebview is not there", not for "the user said no".
+        """
         try:
             import webview
+
             if webview.windows:
                 res = webview.windows[0].create_file_dialog(
                     webview.OPEN_DIALOG,
                     file_types=('Model Files (*.onnx;*.pt;*.pth;*.tflite;*.keras;*.h5)', 'All Files (*.*)')
                 )
-                if res and len(res) > 0:
-                    return res[0]
+                # res is None when cancelled, a sequence of paths when chosen. Either
+                # way pywebview handled it and there is nothing left to fall back to.
+                return res[0] if res else ""
         except Exception:
-            pass
+            import logging
+
+            logging.getLogger(__name__).debug(
+                "Native file dialog unavailable; falling back to Tk", exc_info=True)
 
         try:
             import tkinter as tk
@@ -1290,6 +1364,75 @@ class TatvaPyBridge:
     def get_build_info(self) -> dict[str, str]:
         return {"version": BUILD_VERSION, "label": BUILD_LABEL}
 
+    def list_targets(self) -> list[dict[str, Any]]:
+        """
+        The real target registry, so the UI cannot drift from the compiler.
+
+        The page used to hardcode three cards, one of which (RV64GCV) it presented
+        without the experimental warning the CLI attaches to it.
+        """
+        try:
+            from tatva.compiler import TARGETS
+
+            return [
+                {
+                    "name": v.name,
+                    "march": v.gcc_march,
+                    "mabi": v.gcc_mabi,
+                    "bitness": v.bitness,
+                    "experimental": v.experimental,
+                    "notes": v.notes,
+                    "default": v.name == "RV64GC",
+                }
+                for v in TARGETS.values()
+            ]
+        except Exception:
+            return []
+
+    def list_sample_models(self) -> list[dict[str, Any]]:
+        """
+        Models that ship with the repo, so a first-time user has something to compile.
+
+        Without this the "try it" path starts with "go find an ONNX file", which is a
+        poor first five minutes. Only files that are actually on disk are returned --
+        the list is built by looking, not by hardcoding names into the page.
+        """
+        roots = [
+            os.path.join(getattr(sys, "_MEIPASS", ""), "models"),
+            os.path.join(_CURRENT_DIR, "..", "..", "models"),
+            os.path.join(_CURRENT_DIR, "..", "..", "..", "models"),
+            os.path.join(os.getcwd(), "models"),
+        ]
+
+        # Ordered smallest-first: the nano model compiles in a fraction of the time the
+        # pretrained one does, and a first run should not take twenty minutes.
+        known = [
+            ("model_mlp.onnx", "MLP fixture", "Two dense layers. The fastest end-to-end run."),
+            ("model.onnx", "Tiny transformer block", "Attention pattern present — shows the fusion pass working."),
+            ("model_nano.onnx", "Nano", "Small but realistic; a few minutes per build."),
+            ("model_medium.onnx", "Medium", "Slower. Use once the small ones work."),
+        ]
+
+        out: list[dict[str, Any]] = []
+        for root in roots:
+            if not root or not os.path.isdir(root):
+                continue
+            for filename, label, note in known:
+                path = os.path.abspath(os.path.join(root, filename))
+                if os.path.exists(path) and not any(s["path"] == path for s in out):
+                    out.append(
+                        {
+                            "path": path,
+                            "name": filename,
+                            "label": label,
+                            "note": note,
+                            "size_kb": round(os.path.getsize(path) / 1024, 1),
+                        }
+                    )
+            if out:
+                break
+        return out
+
     def get_toolchain_health(self) -> dict[str, Any]:
         try:
             from scaffolding.executor import ToolchainManager
@@ -1308,6 +1451,110 @@ class TatvaPyBridge:
                 "status_badge": "🔴 Toolchain probe failed",
                 "error": f"Could not probe toolchain: {e}",
             }
+
+    # ── in-app toolchain install ──────────────────────────────────────────────
+    #
+    # Without this, anyone who receives the zip gets through stages 01-04 and then
+    # hits "RISC-V GCC cross-compiler binary not found" at stage 05, with the only
+    # remedy being `tatva setup` in a terminal -- a command they do not have,
+    # because they have an exe and not a checkout. The machinery already existed
+    # in tatva.toolchain; it just had no button.
+
+    def get_toolchain_plan(self) -> dict[str, Any]:
+        """What an install would fetch, from where, to where. Touches no network."""
+        try:
+            from tatva.toolchain import COMPONENTS, plan_install, tools_dir
+
+            items = []
+            for key in COMPONENTS:
+                plan = plan_install(key)
+                items.append(
+                    {
+                        "key": key,
+                        "label": plan.component.label,
+                        "version": plan.component.version,
+                        "url": plan.url,
+                        "dest": plan.dest,
+                        "size_mb": plan.component.approx_size_mb,
+                        "installed": plan.already_installed,
+                    }
+                )
+            return {"supported": True, "tools_dir": tools_dir(), "components": items, "error": None}
+        except Exception as e:
+            # Unsupported CPU/OS raises here. Say so plainly rather than offering a
+            # button that can only fail.
+            return {"supported": False, "tools_dir": "", "components": [], "error": str(e)}
+
+    def start_toolchain_install(self, force: bool = False) -> dict[str, Any]:
+        """
+        Kick the download off on a worker thread and return immediately.
+
+        A synchronous 520 MB download would block the js_api call, and with it the
+        whole window, for several minutes with nothing on screen.
+        """
+        with self._install_lock:
+            if self._install_state.get("running"):
+                return {"started": False, "error": "An install is already running."}
+            self._install_state = {
+                "running": True,
+                "done": False,
+                "ok": False,
+                "component": "",
+                "label": "",
+                "read": 0,
+                "total": 0,
+                "log": ["Starting…"],
+                "error": "",
+            }
+
+        threading.Thread(target=self._install_worker, args=(bool(force),), daemon=True).start()
+        return {"started": True, "error": None}
+
+    def _install_worker(self, force: bool) -> None:
+        from tatva.toolchain import COMPONENTS, install_component, plan_install
+
+        def note(line: str) -> None:
+            with self._install_lock:
+                self._install_state["log"].append(line)
+
+        ok = True
+        try:
+            for key in COMPONENTS:
+                plan = plan_install(key)
+                with self._install_lock:
+                    self._install_state.update(
+                        component=key, label=plan.component.label, read=0, total=0
+                    )
+
+                if plan.already_installed and not force:
+                    note(f"{plan.component.label} — already installed, skipped")
+                    continue
+
+                note(f"Downloading {plan.component.label} (~{plan.component.approx_size_mb} MB)…")
+
+                def on_progress(read: int, total: int) -> None:
+                    with self._install_lock:
+                        self._install_state["read"] = read
+                        self._install_state["total"] = total
+
+                path = install_component(key, force=force, progress=False, on_progress=on_progress)
+                note(f"Installed → {path}")
+        except Exception as e:
+            ok = False
+            with self._install_lock:
+                self._install_state["error"] = str(e)
+            note(f"FAILED: {e}")
+
+        with self._install_lock:
+            self._install_state["running"] = False
+            self._install_state["done"] = True
+            self._install_state["ok"] = ok
+        if ok:
+            note("Toolchain ready. Stages 04 and 05 can now run.")
+
+    def get_toolchain_install_status(self) -> dict[str, Any]:
+        with self._install_lock:
+            return dict(self._install_state)
 
     def get_ollama_models(self) -> list[str]:
         """Return models the local Ollama server actually reports. Empty if it is not running."""
@@ -1431,6 +1678,10 @@ class TatvaPyBridge:
             "filename": os.path.basename(model_path),
             "framework": framework,
             "size_mb": size_mb,
+            # Raw bytes as well as megabytes. Every bundled sample is well under a
+            # megabyte, so size_mb alone renders "0 MB" for a file that is really
+            # 15 KB. The UI picks the unit from this.
+            "size_bytes": size_bytes,
             "status": "Ready for Step 1" if not parse_error else "Loaded (graph unreadable)",
             "layer_count": layer_count,
             "sha256": f"0x{sha256}...",
@@ -1491,6 +1742,92 @@ class TatvaPyBridge:
         except Exception as e:
             return {"filename": os.path.basename(model_path), "error": f"Analysis failed: {e}"}
 
+    def map_operators(self, model_path: str, target_name: str) -> dict[str, Any]:
+        """
+        Stage 03 (MAP): match every operator in the graph against the chosen chip.
+
+        This is the stage the GUI previously had no screen for at all -- the numbering
+        jumped from 2 to 4. It answers one question per operator: is there a lowering
+        for it on this target, and what will that lowering actually be? Nothing here is
+        estimated; the operator list comes from the imported Relax module and the
+        verdicts come from the same SUPPORTED_OPS set the compiler enforces.
+        """
+        if not model_path or not os.path.exists(model_path):
+            return {"success": False, "error": f"Model file not found: '{model_path}'"}
+
+        try:
+            from tatva.compiler import SUPPORTED_OPS, TARGETS, analyze_graph, import_model
+
+            variant = TARGETS.get(target_name)
+            if variant is None:
+                return {
+                    "success": False,
+                    "error": f"Unknown target '{target_name}'. Known targets: {', '.join(sorted(TARGETS))}.",
+                }
+
+            report = analyze_graph(import_model(model_path))
+            histogram = getattr(report, "op_histogram", {}) or {}
+
+            operators = []
+            for op, count in sorted(histogram.items(), key=lambda kv: (-kv[1], kv[0])):
+                supported = op in SUPPORTED_OPS
+                if not supported:
+                    lowering, kind = "No lowering in TATVA's operator set — compilation stops here.", "blocked"
+                elif "softmax" in op:
+                    lowering, kind = "Single-pass fused kernel (Schraudolph fast exp).", "fused"
+                elif "matmul" in op or "dense" in op:
+                    lowering, kind = "Scalar C loop nest — dominant cycle cost on this target.", "hot"
+                elif "layer_norm" in op:
+                    lowering, kind = "Scalar C reduction over the feature axis.", "hot"
+                else:
+                    lowering, kind = "Generic scalar C emitted by TVM Relax.", "plain"
+                operators.append(
+                    {"op": op, "count": count, "supported": supported, "lowering": lowering, "kind": kind}
+                )
+
+            unsupported = [o["op"] for o in operators if not o["supported"]]
+
+            # Target-level caveats. These are properties of the chip/codegen pairing, not
+            # of the model, and they are the reason a "supported" verdict is not the whole
+            # story -- RV64GCV maps everything and still emits scalar code.
+            warnings: list[str] = []
+            if variant.experimental:
+                warnings.append(f"{variant.name} is experimental: {variant.notes}")
+            if "v" in variant.gcc_march.rsplit("rv64", 1)[-1] or variant.gcc_march.endswith("v"):
+                warnings.append(
+                    "Vector extension is enabled in the ABI but not targeted by code "
+                    "generation. Expect the same cycle count as the non-vector target."
+                )
+            if variant.bitness == 32:
+                warnings.append(
+                    "32-bit target: double-precision tensors are emulated in software. "
+                    "Prefer FP32 models."
+                )
+            if getattr(report, "has_transformer_bottleneck", False):
+                warnings.append(
+                    "Attention pattern detected (softmax feeding matmul). This is the "
+                    "subgraph the fusion pass in stage 04 rewrites."
+                )
+
+            return {
+                "success": True,
+                "error": "",
+                "target": variant.name,
+                "march": variant.gcc_march,
+                "mabi": variant.gcc_mabi,
+                "bitness": variant.bitness,
+                "experimental": variant.experimental,
+                "notes": variant.notes,
+                "total_ops": getattr(report, "total_ops", 0),
+                "distinct_ops": len(operators),
+                "operators": operators,
+                "unsupported": unsupported,
+                "warnings": warnings,
+                "ready": not unsupported,
+            }
+        except Exception as e:
+            return {"success": False, "error": f"Operator mapping failed: {e}"}
+
     def run_pipeline(self, model_path: str, target_name: str, fuse_softmax: bool = True, do_quantize: bool = False) -> dict[str, Any]:
         """
         Compile and measure BOTH the baseline and the optimized configuration under QEMU.
@@ -1548,11 +1885,17 @@ class TatvaPyBridge:
                 "success": True,
                 "error": "",
                 "config_digest": digest,
-                "base_ms": round(base_ms, 2),
-                "opt_ms": round(opt_ms, 2),
+                # Four decimals, not two. A small model runs in well under a millisecond
+                # under QEMU, and rounding to 2 dp turned a real baseline/optimized gap
+                # into "0.06 ms" against "0.06 ms" -- two identical bars on the chart for
+                # a run that did measure a difference. `speedup` above is computed from
+                # the unrounded values, so it stays correct either way; this is about the
+                # numbers the user actually reads.
+                "base_ms": round(base_ms, 4),
+                "opt_ms": round(opt_ms, 4),
                 "speedup": speedup,
-                "baseline_ms": round(base_ms, 2),
-                "optimized_ms": round(opt_ms, 2),
+                "baseline_ms": round(base_ms, 4),
+                "optimized_ms": round(opt_ms, 4),
                 "speedup_pct": speedup,
                 "mse": mse,
                 "accuracy_ok": accuracy_ok,
@@ -1654,6 +1997,48 @@ def launch_gui() -> None:
         app.mainloop()
 
 
+def _main() -> None:
+    """
+    Entry point for the frozen TATVA.exe.
+
+    The packaged build runs windowed, with no console attached, so an exception on the
+    way up has nowhere to print to and the app just vanishes from the taskbar with no
+    explanation. Catching it here means a failed launch produces a dialog the user can
+    read and a log file they can send on, instead of silence.
+    """
+    try:
+        launch_gui()
+    except Exception:
+        import traceback
+
+        detail = traceback.format_exc()
+
+        log_path = ""
+        try:
+            log_dir = os.path.join(os.path.expanduser("~"), ".tatva")
+            os.makedirs(log_dir, exist_ok=True)
+            log_path = os.path.join(log_dir, "startup-error.log")
+            with open(log_path, "w", encoding="utf-8") as fh:
+                fh.write(detail)
+        except Exception:
+            log_path = ""
+
+        message = (
+            "TATVA could not start.\n\n"
+            f"{detail.strip().splitlines()[-1] if detail.strip() else 'Unknown error'}\n\n"
+            + (f"Full details were written to:\n{log_path}" if log_path else detail)
+        )
+
+        if getattr(sys, "frozen", False):
+            with contextlib.suppress(Exception):
+                root = tk.Tk()
+                root.withdraw()
+                messagebox.showerror("TATVA — startup failed", message)
+                root.destroy()
+        print(detail, file=sys.stderr)
+        raise SystemExit(1) from None
+
+
 if __name__ == "__main__":
-    launch_gui()
+    _main()
 

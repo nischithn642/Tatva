@@ -1,0 +1,632 @@
+/*
+ * TATVA Optimization Studio — stylesheet
+ *
+ * Hand-written rather than pulled from a CDN on purpose. The previous page loaded
+ * Tailwind, Lucide, Chart.js and Google Fonts from four different remote hosts, so a
+ * machine with no network -- which is the machine TATVA is designed for -- rendered an
+ * unstyled document with an empty canvas where the benchmark chart should be. Nothing
+ * in this file, or anything it references, leaves the disk.
+ */
+
+/* ---------------------------------------------------------------- tokens */
+
+:root {
+  color-scheme: light;
+
+  --gold: #C68A26;
+  --gold-bright: #EBB85F;
+  --gold-soft: rgba(198, 138, 38, 0.12);
+
+  --bg: #F6F6F4;
+  --surface: #FFFFFF;
+  --surface-2: #EFEFEC;
+  --line: #DFDFD9;
+  --line-strong: #C7C7BF;
+
+  --ink: #16161A;
+  --ink-2: #55555F;
+  --ink-3: #85858F;
+
+  --ok: #1D7A45;
+  --ok-soft: rgba(29, 122, 69, 0.12);
+  --warn: #A96A00;
+  --warn-soft: rgba(169, 106, 0, 0.12);
+  --err: #B3261E;
+  --err-soft: rgba(179, 38, 30, 0.12);
+
+  --term-bg: #101014;
+  --term-ink: #DCDCE4;
+
+  --radius: 14px;
+  --radius-sm: 9px;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 6px 20px rgba(0, 0, 0, 0.04);
+
+  --mono: ui-monospace, "Cascadia Mono", "JetBrains Mono", Consolas, "SF Mono", Menlo, monospace;
+  --sans: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, Inter, Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+html.dark {
+  color-scheme: dark;
+
+  --gold: #EBB85F;
+  --gold-bright: #F6D08A;
+  --gold-soft: rgba(235, 184, 95, 0.14);
+
+  --bg: #0C0C0E;
+  --surface: #151518;
+  --surface-2: #1D1D21;
+  --line: #2A2A30;
+  --line-strong: #3A3A42;
+
+  --ink: #ECECEF;
+  --ink-2: #A9A9B4;
+  --ink-3: #74747E;
+
+  --ok: #4ADE80;
+  --ok-soft: rgba(74, 222, 128, 0.14);
+  --warn: #FBBF24;
+  --warn-soft: rgba(251, 191, 36, 0.14);
+  --err: #F87171;
+  --err-soft: rgba(248, 113, 113, 0.14);
+
+  --term-bg: #08080A;
+  --term-ink: #E6E6EC;
+
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 26px rgba(0, 0, 0, 0.3);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 6px; border: 3px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--ink-3); background-clip: content-box; }
+
+:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; border-radius: 4px; }
+
+/* ---------------------------------------------------------------- layout */
+
+.app { display: flex; height: 100vh; }
+
+.sidebar {
+  width: 262px;
+  flex-shrink: 0;
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+}
+
+.brand {
+  height: 64px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.brand img { height: 19px; width: auto; display: block; }
+.brand .ver {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--gold);
+  background: var(--gold-soft);
+  border: 1px solid var(--gold-soft);
+  padding: 2px 7px;
+  border-radius: 20px;
+}
+
+.nav { flex: 1; overflow-y: auto; padding: 14px 10px; }
+
+.nav-head {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  padding: 0 10px;
+  margin: 4px 0 8px;
+}
+.nav-head + .nav-head, .nav-group + .nav-head { margin-top: 20px; }
+
+.nav-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  margin-bottom: 2px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.nav-item:hover { background: var(--surface-2); color: var(--ink); }
+.nav-item.active { background: var(--gold-soft); border-color: rgba(198, 138, 38, 0.28); color: var(--ink); font-weight: 600; }
+.nav-item.active .step-no { background: var(--gold); color: #16161A; border-color: transparent; }
+
+.step-no {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--ink-3);
+}
+.nav-item.done .step-no { background: var(--ok-soft); border-color: transparent; color: var(--ok); }
+.nav-item .ico { flex-shrink: 0; width: 15px; height: 15px; opacity: 0.75; }
+
+.sidebar-foot { padding: 12px; border-top: 1px solid var(--line); }
+
+.health {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--ink-2);
+  background: var(--surface-2);
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+}
+.health:hover { border-color: var(--line-strong); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-3); flex-shrink: 0; }
+.dot.ok { background: var(--ok); }
+.dot.warn { background: var(--warn); }
+.dot.err { background: var(--err); }
+
+/* ---------------------------------------------------------------- main */
+
+.main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+.topbar {
+  height: 64px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.crumb { font-size: 12px; color: var(--ink-3); }
+.crumb b { color: var(--ink); font-weight: 600; }
+.topbar .spacer { flex: 1; }
+
+/* The stage rail is the answer to "which step am I on?" -- it is always visible and
+   always shows all five, so a stage can never silently go missing the way 03 did. */
+.rail {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  padding: 12px 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.rail-step {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 14px 7px 11px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink-3);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.13s;
+}
+.rail-step:first-child { border-radius: 999px 0 0 999px; padding-left: 15px; }
+.rail-step:last-child { border-radius: 0 999px 999px 0; }
+.rail-step + .rail-step { border-left: none; }
+.rail-step:hover { color: var(--ink); background: var(--surface-2); }
+
+.rail-step .n {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 700;
+  opacity: 0.85;
+}
+/* Two lines: the stage name, and what the stage is for. The second line is the part
+   that stops "03 Map" from being a label nobody can act on. */
+.rail-step .t { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.2; }
+.rail-step .t b { font-weight: 700; font-size: 12px; letter-spacing: 0.01em; }
+.rail-step .t i { font-style: normal; font-size: 10px; opacity: 0.72; margin-top: 1px; }
+
+.rail-step.done { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
+.rail-step.active {
+  color: var(--ink);
+  background: var(--gold-soft);
+  border-color: var(--gold);
+  box-shadow: inset 0 0 0 1px var(--gold);
+  font-weight: 700;
+}
+
+.view-scroll { flex: 1; overflow-y: auto; padding: 26px 24px 60px; }
+.view { max-width: 1080px; margin: 0 auto; }
+.view.hidden { display: none; }
+
+.page-head { margin-bottom: 20px; }
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--gold);
+  text-transform: uppercase;
+}
+.page-head h1 { font-size: 23px; font-weight: 700; margin: 5px 0 6px; letter-spacing: -0.015em; }
+.page-head p { margin: 0; color: var(--ink-2); font-size: 13.5px; max-width: 72ch; }
+
+/* ---------------------------------------------------------------- pieces */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 20px;
+  box-shadow: var(--shadow);
+}
+.card + .card, .stack > * + * { margin-top: 16px; }
+.stack { display: block; }
+
+.card h2 { font-size: 14px; font-weight: 700; margin: 0 0 3px; }
+.card .sub { font-size: 12.5px; color: var(--ink-2); margin: 0 0 15px; }
+
+.grid { display: grid; gap: 16px; }
+.grid.two { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.grid.three { grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); }
+.grid.four { grid-template-columns: repeat(auto-fit, minmax(165px, 1fr)); }
+
+.row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.row.end { justify-content: flex-end; }
+.row.between { justify-content: space-between; }
+.mt { margin-top: 16px; }
+.muted { color: var(--ink-2); }
+.tiny { font-size: 11.5px; }
+.mono { font-family: var(--mono); }
+.gold { color: var(--gold); }
+
+/* One switch for every panel the script shows and hides. The element-specific rules
+   further down stay because they also carry a display value worth preserving. */
+.hidden { display: none !important; }
+
+/* buttons */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 9px 17px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.13s;
+}
+.btn:hover:not(:disabled) { background: var(--surface-2); border-color: var(--ink-3); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn svg { width: 15px; height: 15px; }
+
+.btn.primary { background: var(--gold); border-color: var(--gold); color: #16161A; }
+.btn.primary:hover:not(:disabled) { background: var(--gold-bright); border-color: var(--gold-bright); }
+.btn.big { padding: 12px 24px; font-size: 14px; }
+.btn.small { padding: 4px 12px; font-size: 11.5px; vertical-align: middle; }
+.btn.ghost { border-color: transparent; background: transparent; color: var(--ink-2); }
+.btn.ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--ink); }
+
+/* A running button spins its own icon rather than swapping in a separate spinner,
+   so the control keeps its width and the layout does not jump mid-build. */
+.btn.loading { pointer-events: none; opacity: 0.75; }
+.btn.loading svg { animation: spin 0.9s linear infinite; }
+
+/* form fields */
+
+label.field { display: block; margin-bottom: 14px; }
+label.field > .lbl { display: block; font-size: 11.5px; font-weight: 600; color: var(--ink-2); margin-bottom: 5px; }
+label.field > .hint { display: block; font-size: 11.5px; color: var(--ink-3); margin-top: 5px; }
+
+.input, .select, textarea.input {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.input:focus, .select:focus, textarea.input:focus { outline: none; border-color: var(--gold); box-shadow: 0 0 0 3px var(--gold-soft); }
+textarea.input { resize: vertical; line-height: 1.55; }
+.select { font-family: var(--sans); }
+
+/* badges */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  background: var(--surface-2);
+  color: var(--ink-3);
+}
+.badge.available { background: var(--ok-soft); color: var(--ok); }
+.badge.experimental { background: var(--warn-soft); color: var(--warn); }
+.badge.roadmap { background: var(--surface-2); color: var(--ink-3); }
+.badge.blocked { background: var(--err-soft); color: var(--err); }
+.badge.info { background: var(--gold-soft); color: var(--gold); }
+
+/* selectable cards (targets, passes) */
+
+.pick {
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 15px;
+  cursor: pointer;
+  font: inherit;
+  color: var(--ink);
+  transition: all 0.13s;
+  position: relative;
+}
+.pick:hover { border-color: var(--line-strong); }
+.pick.selected { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold), var(--shadow); background: var(--gold-soft); }
+.pick .name { font-family: var(--mono); font-weight: 700; font-size: 13px; }
+.pick .desc { font-size: 11.5px; color: var(--ink-2); margin-top: 5px; line-height: 1.45; }
+.pick .flags { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); margin-top: 8px; }
+
+.pick .check { position: absolute; top: 13px; right: 13px; width: 16px; height: 16px; color: var(--gold); opacity: 0; }
+.pick.selected .check { opacity: 1; }
+
+/* stat tiles */
+
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 15px 16px; }
+.stat .k { font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
+.stat .v { font-family: var(--mono); font-size: 21px; font-weight: 700; margin-top: 6px; letter-spacing: -0.02em; }
+.stat .v.ok { color: var(--ok); }
+.stat .v.warn { color: var(--warn); }
+.stat .v.err { color: var(--err); }
+.stat .v.gold { color: var(--gold); }
+.stat .n { font-size: 11px; color: var(--ink-3); margin-top: 3px; }
+
+/* notices */
+
+.notice {
+  display: flex;
+  gap: 11px;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  line-height: 1.5;
+  border: 1px solid transparent;
+}
+.notice svg { width: 16px; height: 16px; flex-shrink: 0; margin-top: 1px; }
+.notice { background: var(--surface-2); border-color: var(--line); color: var(--ink); }
+.notice.info { background: var(--gold-soft); border-color: rgba(198, 138, 38, 0.25); color: var(--ink); }
+.notice.ok { background: var(--ok-soft); border-color: rgba(29, 122, 69, 0.25); color: var(--ink); }
+.notice.warn { background: var(--warn-soft); border-color: rgba(169, 106, 0, 0.25); color: var(--ink); }
+.notice.err { background: var(--err-soft); border-color: rgba(179, 38, 30, 0.28); color: var(--ink); }
+.notice.hidden { display: none; }
+.notice b { font-weight: 700; }
+
+/* empty state */
+
+.empty {
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  padding: 34px 20px;
+  text-align: center;
+  color: var(--ink-3);
+  font-size: 12.5px;
+}
+.empty svg { width: 28px; height: 28px; opacity: 0.5; margin-bottom: 9px; }
+.empty.hidden { display: none; }
+
+/* dropzone */
+
+.drop {
+  border: 1.5px dashed var(--line-strong);
+  border-radius: var(--radius);
+  padding: 30px 20px;
+  text-align: center;
+  transition: all 0.15s;
+  background: var(--bg);
+}
+.drop.over { border-color: var(--gold); background: var(--gold-soft); }
+.drop svg { width: 26px; height: 26px; color: var(--gold); margin-bottom: 8px; }
+
+/* table */
+
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+thead th {
+  text-align: left;
+  padding: 9px 13px;
+  background: var(--surface-2);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  white-space: nowrap;
+}
+tbody td { padding: 9px 13px; border-top: 1px solid var(--line); vertical-align: top; }
+tbody tr.hi { background: var(--ok-soft); }
+td.num, th.num { font-family: var(--mono); text-align: right; }
+
+/* terminal */
+
+.term {
+  background: var(--term-bg);
+  color: var(--term-ink);
+  border-radius: var(--radius-sm);
+  padding: 15px 17px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.65;
+  height: 340px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border: 1px solid var(--line);
+}
+.term .c-dim { color: #7A7A88; }
+.term .c-ok { color: #6EE7A0; }
+.term .c-warn { color: #FBBF24; }
+.term .c-err { color: #F87171; }
+.term .c-gold { color: var(--gold-bright); }
+.term .c-head { color: #A5B4FC; font-weight: 700; }
+
+/* chart */
+
+.chart-box { position: relative; height: 260px; width: 100%; }
+.chart-box canvas { width: 100%; height: 100%; display: block; }
+
+.legend { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 12px; font-size: 11.5px; color: var(--ink-2); }
+.legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; margin-right: 6px; vertical-align: -1px; }
+
+/* operator histogram (stage 02)
+   A plain <div> bar rather than a second canvas -- it is a list with one number each,
+   and a chart library would be four hundred kilobytes to draw a rectangle. */
+
+.hbar { display: flex; align-items: center; gap: 11px; padding: 3px 0; }
+.hbar-l { flex: 0 0 190px; font-size: 11.5px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hbar-t { flex: 1; height: 9px; background: var(--surface-2); border-radius: 3px; overflow: hidden; min-width: 40px; }
+.hbar-t > i { display: block; height: 100%; background: var(--gold); border-radius: 3px; }
+.hbar-n { flex: 0 0 42px; text-align: right; font-size: 11.5px; color: var(--ink-3); }
+
+/* progress */
+
+.bar { height: 5px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
+.bar > i { display: block; height: 100%; width: 0; background: var(--gold); border-radius: 3px; transition: width 0.35s ease; }
+
+/* A build reports only when the whole run finishes, so there is no honest percentage
+   to show while it works. An indeterminate sweep says "running" without implying
+   progress that nothing is actually measuring. */
+.bar.indet > i { width: 34%; animation: slide 1.5s ease-in-out infinite; transition: none; }
+
+/* spinner */
+
+.spin { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------------------------------------------------------------- splash */
+
+/*
+ * Shown while the Python side imports TVM/ONNX, which takes a few seconds. Without it
+ * the window is blank for long enough to look hung.
+ */
+#splash {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  background: #0C0C0E;
+  transition: opacity 0.45s ease, visibility 0.45s;
+}
+#splash.gone { opacity: 0; visibility: hidden; }
+
+.splash-inner { text-align: center; width: 380px; }
+
+.splash-mark { position: relative; display: inline-block; }
+.splash-mark img { width: 300px; display: block; }
+
+/* Gold sweep travelling left-to-right across the wordmark, clipped to the glyphs. */
+.splash-mark::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 38%, rgba(235, 184, 95, 0.85) 50%, transparent 62%);
+  -webkit-mask-image: url("assets/logo-dark.png");
+  mask-image: url("assets/logo-dark.png");
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  background-size: 260% 100%;
+  animation: sweep 2.1s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes sweep {
+  0%   { background-position: 130% 0; }
+  55%  { background-position: -30% 0; }
+  100% { background-position: -30% 0; }
+}
+
+.splash-bar { height: 2px; background: rgba(255, 255, 255, 0.09); border-radius: 2px; overflow: hidden; margin: 30px 0 14px; }
+.splash-bar > i {
+  display: block;
+  height: 100%;
+  width: 38%;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, var(--gold-bright), transparent);
+  animation: slide 1.35s ease-in-out infinite;
+}
+@keyframes slide {
+  0%   { transform: translateX(-105%); }
+  100% { transform: translateX(300%); }
+}
+
+#splash-status {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #6E6E7A;
+  min-height: 15px;
+}
+.splash-tag { margin-top: 26px; font-size: 11px; color: #4A4A54; letter-spacing: 0.05em; }
+
+@media (prefers-reduced-motion: reduce) {
+  .splash-mark::after, .splash-bar > i, .spin { animation: none; }
+  .splash-bar > i { width: 100%; }
+}

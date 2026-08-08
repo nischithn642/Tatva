@@ -411,6 +411,14 @@ def _first_existing_exe(bin_dirs: list[str], exe_names: list[str]) -> str | None
 def find_riscv_gcc() -> tuple[str | None, str | None]:
     """
     Find the RISC-V GCC cross-compiler on PATH, in the tools directory, or in the repo.
+
+    This is the single resolver for the compiler. Stage 05 calls it, `tatva doctor` calls
+    it, and the Diagnostics page reaches it through ToolchainManager -- because anything
+    that reports on the toolchain has to report what the build will actually run.
+
+    The two names below are the only ones accepted. riscv64-linux-gnu-gcc is deliberately
+    not among them: compile_model links bare metal (-ffreestanding -nostdlib -T link.ld),
+    which a Linux/glibc cross-compiler is not configured for.
     """
     candidates = ["riscv-none-elf-gcc", "riscv64-unknown-elf-gcc"]
     for name in candidates:
@@ -423,7 +431,10 @@ def find_riscv_gcc() -> tuple[str | None, str | None]:
 
     found = _first_existing_exe(_search_bin_dirs("riscv-none-elf-gcc", "riscv-toolchain"), candidates)
     if found:
-        return "riscv-none-elf-gcc", found
+        # Report the binary that was actually found. Returning candidates[0] regardless
+        # labelled a riscv64-unknown-elf-gcc install as riscv-none-elf-gcc on the
+        # Diagnostics page, under a column headed "resolved path".
+        return os.path.splitext(os.path.basename(found))[0], found
 
     return None, None
 
@@ -431,6 +442,10 @@ def find_riscv_gcc() -> tuple[str | None, str | None]:
 def find_qemu(bitness: int = 64) -> tuple[str | None, str | None]:
     """
     Find the QEMU emulator binary matching the requested target bitness (32 or 64).
+
+    System mode only. The user-mode `qemu-riscv64` is not an accepted substitute: the
+    measurement boots an ELF with `-machine virt` and reads rdcycle on the target, which
+    a user-mode emulator cannot do.
     """
     name_prefix = f"qemu-system-riscv{bitness}"
     path = shutil.which(name_prefix)

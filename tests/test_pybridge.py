@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tatva import __version__
+from tatva import DISPLAY_VERSION, __version__
 from tatva.gui import TatvaPyBridge
 
 
@@ -28,11 +28,16 @@ def test_build_info_matches_the_package_version(bridge) -> None:
 
     website/index.html used to hardcode "v1.2.0-gemini" in five places while
     pyproject.toml said 0.2.0. This is the wire that keeps them honest.
+
+    The badge shows the display name ("Beta 2.0"); the label additionally carries the
+    PEP 440 build string, so a screenshot of the window is enough to identify exactly
+    which build someone is running.
     """
     info = bridge.get_build_info()
 
-    assert info["version"] == f"v{__version__}"
-    assert info["label"] == f"v{__version__}"
+    assert info["version"] == DISPLAY_VERSION
+    assert __version__ in info["label"]
+    assert DISPLAY_VERSION in info["label"]
 
 
 @pytest.mark.unit
@@ -44,6 +49,8 @@ def test_bridge_results_survive_json_serialization(bridge) -> None:
     for result in (
         bridge.get_build_info(),
         bridge.get_toolchain_health(),
+        bridge.get_toolchain_plan(),
+        bridge.get_toolchain_install_status(),
         bridge.scan_hardware_boards(),
         bridge.validate_model_file("does/not/exist.onnx"),
         bridge.verify_toolchain_configuration("NOT_A_TARGET"),
@@ -76,6 +83,56 @@ def test_toolchain_health_reports_failure_rather_than_a_green_badge(bridge) -> N
     assert health["gcc"] is False
     assert health["qemu"] is False
     assert "boom" in health["error"]
+
+
+@pytest.mark.unit
+def test_toolchain_plan_describes_the_download_without_touching_the_network(bridge) -> None:
+    """
+    The Diagnostics install card shows exactly what it is about to fetch, from where,
+    and to where, before anyone presses the button. That has to be answerable offline.
+    """
+    plan = bridge.get_toolchain_plan()
+
+    assert plan["supported"] is True, plan["error"]
+    assert plan["tools_dir"]
+    keys = {c["key"] for c in plan["components"]}
+    assert {"gcc", "qemu"} <= keys
+
+    for component in plan["components"]:
+        assert component["url"].startswith("https://")
+        assert component["size_mb"] > 0
+        assert isinstance(component["installed"], bool)
+
+
+@pytest.mark.unit
+def test_toolchain_plan_reports_an_unsupported_host_instead_of_raising(bridge) -> None:
+    """
+    On a CPU xPack publishes no build for, the honest answer is "not available here".
+    Raising would leave the install card rendering a button that can only fail.
+    """
+    from tatva.toolchain import ToolchainUnavailableError
+
+    with patch("tatva.toolchain.plan_install", side_effect=ToolchainUnavailableError("no build for sparc")):
+        plan = bridge.get_toolchain_plan()
+
+    assert plan["supported"] is False
+    assert "sparc" in plan["error"]
+    assert plan["components"] == []
+
+
+@pytest.mark.unit
+def test_install_status_starts_idle_and_refuses_to_run_twice(bridge) -> None:
+    """
+    The button is disabled while a download runs, but a second window or a fast
+    double-click must not start a second 520 MB download over the first one.
+    """
+    assert bridge.get_toolchain_install_status()["running"] is False
+
+    bridge._install_state["running"] = True
+    second = bridge.start_toolchain_install()
+
+    assert second["started"] is False
+    assert "already running" in second["error"]
 
 
 @pytest.mark.unit

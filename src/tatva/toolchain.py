@@ -26,7 +26,13 @@ import tarfile
 import tempfile
 import urllib.request
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
+
+# Called with (bytes_read, bytes_total) as a download runs; total is 0 when the server
+# sends no Content-Length. The desktop app passes one of these so it can show a real
+# progress bar instead of a spinner that sits there for 430 MB.
+ProgressFn = Callable[[int, int], None] | None
 
 __all__ = [
     "COMPONENTS",
@@ -210,7 +216,7 @@ def installed_components() -> dict[str, str | None]:
     return {key: find_installed_exe(comp) for key, comp in COMPONENTS.items()}
 
 
-def _download(url: str, dest_path: str, progress: bool = True) -> None:
+def _download(url: str, dest_path: str, progress: bool = True, on_progress: ProgressFn = None) -> None:
     # GitHub release redirects reject the default urllib User-Agent with a 403.
     request = urllib.request.Request(url, headers={"User-Agent": "tatva-setup"})
     with urllib.request.urlopen(request) as response, open(dest_path, "wb") as out:
@@ -225,6 +231,8 @@ def _download(url: str, dest_path: str, progress: bool = True) -> None:
             if progress and total:
                 pct = read * 100 // total
                 print(f"\r  downloading... {pct:3d}%  ({read // 1048576} / {total // 1048576} MB)", end="", flush=True)
+            if on_progress is not None:
+                on_progress(read, total)
     if progress:
         print()
 
@@ -274,7 +282,12 @@ def _restore_exec_bits(root: str) -> None:
                 os.chmod(path, mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def install_component(component_key: str, force: bool = False, progress: bool = True) -> str:
+def install_component(
+    component_key: str,
+    force: bool = False,
+    progress: bool = True,
+    on_progress: ProgressFn = None,
+) -> str:
     """
     Download, unpack and verify one component. Returns the path to its probe executable.
 
@@ -290,7 +303,7 @@ def install_component(component_key: str, force: bool = False, progress: bool = 
     with tempfile.TemporaryDirectory(prefix="tatva-setup-") as tmp:
         archive = os.path.join(tmp, os.path.basename(plan.url))
         try:
-            _download(plan.url, archive, progress=progress)
+            _download(plan.url, archive, progress=progress, on_progress=on_progress)
         except Exception as e:
             raise ToolchainUnavailableError(
                 f"Could not download {plan.component.label} from {plan.url} ({e}).\n"

@@ -1,1095 +1,677 @@
 <!DOCTYPE html>
-<html lang="en" class="light">
+<html lang="en" class="dark">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="TATVA RISC-V Optimization Studio — Enterprise Deep-Tech Bare-Metal RISC-V Model Compiler & Schedule Optimizer.">
-  <title>TATVA RISC-V Optimization Studio</title>
-  
-  <!-- Google Fonts -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
-  
-  <!-- Tailwind CSS CDN & Config -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      darkMode: 'class',
-      theme: {
-        extend: {
-          fontFamily: {
-            sans: ['Inter', 'sans-serif'],
-            mono: ['JetBrains Mono', 'monospace'],
-          },
-          colors: {
-            geminiBlue: '#1A73E8',
-            geminiBlueDark: '#A8C7FA',
-            geminiGreen: '#1E8E3E',
-            geminiGreenDark: '#34D399',
-            geminiAmber: '#F59E0B',
-            geminiRed: '#D93025',
-          }
-        }
-      }
-    }
-  </script>
-
-  <!-- Lucide Icons & Chart.js -->
-  <script src="https://unpkg.com/lucide@latest"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-
-  <style>
-    :root {
-      --bg-surface: #F8F9FA;
-      --bg-card: #FFFFFF;
-      --bg-secondary: #F1F3F4;
-      --border-card: #E0E3E7;
-      --text-primary: #1F1F1F;
-      --text-secondary: #444746;
-      --accent-blue: #1A73E8;
-      --accent-green: #1E8E3E;
-      --accent-amber: #D97706;
-      --accent-red: #D93025;
-      --terminal-bg: #0F172A;
-      --terminal-text: #E2E8F0;
-    }
-
-    html.dark {
-      --bg-surface: #131314;
-      --bg-card: #1E1F20;
-      --bg-secondary: #28292A;
-      --border-card: #2C2C2C;
-      --text-primary: #E3E3E3;
-      --text-secondary: #C4C7C5;
-      --accent-blue: #A8C7FA;
-      --accent-green: #34D399;
-      --accent-amber: #FBBF24;
-      --accent-red: #F87171;
-      --terminal-bg: #0B0F17;
-      --terminal-text: #F3F4F6;
-    }
-
-    body {
-      background-color: var(--bg-surface);
-      color: var(--text-primary);
-      transition: background-color 0.25s ease, color 0.25s ease;
-    }
-
-    .gemini-card {
-      background-color: var(--bg-card);
-      border: 1px solid var(--border-card);
-      border-radius: 20px;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
-      transition: border-color 0.2s ease, box-shadow 0.2s ease;
-    }
-
-    .gemini-card:hover {
-      border-color: var(--accent-blue);
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
-    }
-
-    .nav-item {
-      transition: all 0.2s ease-in-out;
-      border-radius: 9999px;
-    }
-
-    .nav-item.active {
-      background-color: var(--bg-secondary);
-      color: var(--accent-blue);
-      font-weight: 600;
-    }
-
-    .target-card.selected {
-      border-color: var(--accent-blue) !important;
-      background-color: var(--bg-secondary);
-      box-shadow: 0 0 0 2px var(--accent-blue);
-    }
-
-    .toggle-card.active {
-      border-color: var(--accent-blue);
-      background-color: var(--bg-secondary);
-    }
-
-    ::-webkit-scrollbar { width: 6px; height: 6px; }
-    ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: rgba(120, 120, 120, 0.2); border-radius: 4px; }
-    ::-webkit-scrollbar-thumb:hover { background: rgba(120, 120, 120, 0.4); }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self' 'unsafe-inline' data:; connect-src 'self'; img-src 'self' data:;">
+<meta name="description" content="TATVA — compile and optimize models for bare-metal RISC-V. Runs entirely on this machine.">
+<title>TATVA Optimization Studio</title>
+<link rel="icon" href="assets/icon.png">
+<link rel="stylesheet" href="studio.css">
 </head>
-<body class="h-screen w-screen overflow-hidden flex font-sans antialiased">
+<body>
 
-  <!-- LEFT NAVIGATION SIDEBAR -->
-  <aside class="w-64 border-r border-[var(--border-card)] h-full flex flex-col z-20 shrink-0 bg-[var(--bg-card)]">
-    <div class="h-16 flex items-center px-5 border-b border-[var(--border-card)] justify-between">
-      <div class="flex items-center space-x-3">
-        <img src="assets/tatva_logo.png" alt="Tatva Logo" class="h-8 object-contain rounded-md" onerror="this.onerror=null; this.src='../assets/tatva_logo.png';">
-        <div class="flex flex-col">
-          <span class="font-bold text-base tracking-tight text-[var(--text-primary)]">TATVA</span>
-          <span class="text-[10px] text-[var(--text-secondary)] font-medium -mt-1">Optimization Studio</span>
-        </div>
-      </div>
-      <!-- Placeholder only. The real version is filled in from tatva.__version__ by the
-           pywebviewready handler below; do not hardcode a number here. -->
-      <span id="build-badge" class="text-[10px] font-mono font-semibold bg-blue-500/10 text-[var(--accent-blue)] border border-blue-500/20 px-2 py-0.5 rounded-full">—</span>
+<!-- ============================================================ SPLASH -->
+<div id="splash">
+  <div class="splash-inner">
+    <div class="splash-mark"><img src="assets/logo-dark.png" alt="TATVA"></div>
+    <div class="splash-bar"><i></i></div>
+    <div id="splash-status">Starting compiler backend</div>
+    <div class="splash-tag">Engineering the Essence of Innovation</div>
+  </div>
+</div>
+
+<!-- ============================================================ ICONS -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <g id="i-grid"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></g>
+    <g id="i-file"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></g>
+    <g id="i-scan"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></g>
+    <g id="i-cpu"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></g>
+    <g id="i-sliders"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></g>
+    <g id="i-box"><path d="M21 8l-9-5-9 5v8l9 5 9-5z"/><path d="M3.3 7.5L12 12.5l8.7-5M12 22V12.5"/></g>
+    <g id="i-chart"><path d="M3 3v18h18"/><rect x="7" y="12" width="3" height="6"/><rect x="13" y="8" width="3" height="10"/><rect x="19" y="14" width="1.5" height="4"/></g>
+    <g id="i-pulse"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></g>
+    <g id="i-spark"><path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></g>
+    <g id="i-flask"><path d="M9 2v6.3L3.7 18A2 2 0 0 0 5.4 21h13.2a2 2 0 0 0 1.7-3L15 8.3V2"/><path d="M8 2h8M6.5 15h11"/></g>
+    <g id="i-check"><path d="M20 6L9 17l-5-5"/></g>
+    <g id="i-alert"><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></g>
+    <g id="i-info"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></g>
+    <g id="i-upload"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5M12 3v13"/></g>
+    <g id="i-download"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5M12 15V2"/></g>
+    <g id="i-play"><path d="M6 3l14 9-14 9z"/></g>
+    <g id="i-moon"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></g>
+    <g id="i-sun"><circle cx="12" cy="12" r="4.5"/><path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"/></g>
+    <g id="i-refresh"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></g>
+    <g id="i-term"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></g>
+    <g id="i-map"><path d="M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3z"/><path d="M9 3v15M15 6v15"/></g>
+    <g id="i-book"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></g>
+  </defs>
+</svg>
+
+<div class="app">
+
+  <!-- ========================================================== SIDEBAR -->
+  <aside class="sidebar">
+    <div class="brand">
+      <img id="brand-logo" src="assets/logo-dark.png" alt="TATVA">
+      <span class="ver" id="build-badge">—</span>
     </div>
-    
-    <nav class="flex-1 py-4 flex flex-col gap-1 overflow-y-auto px-3">
-      <p class="text-[10px] font-bold text-[var(--text-secondary)] uppercase tracking-wider mb-1.5 px-3">Pipeline Stages</p>
-      
-      <button onclick="switchTab('dashboard')" id="nav-dashboard" class="nav-item active w-full flex items-center px-3.5 py-2.5 text-xs font-medium text-left">
-        <i data-lucide="layout-dashboard" class="w-4 h-4 mr-3"></i> Dashboard
-      </button>
-      
-      <button onclick="switchTab('model')" id="nav-model" class="nav-item text-[var(--text-secondary)] hover:text-[var(--text-primary)] w-full flex items-center px-3.5 py-2.5 text-xs font-medium text-left">
-        <i data-lucide="folder-open" class="w-4 h-4 mr-3"></i> Model Input &amp; Drop
-      </button>
-      
-      <button onclick="switchTab('target')" id="nav-target" class="nav-item text-[var(--text-secondary)] hover:text-[var(--text-primary)] w-full flex items-center px-3.5 py-2.5 text-xs font-medium text-left">
-        <i data-lucide="cpu" class="w-4 h-4 mr-3"></i> Target Registry (Step 2)
-      </button>
-      
-      <button onclick="switchTab('opt')" id="nav-opt" class="nav-item text-[var(--text-secondary)] hover:text-[var(--text-primary)] w-full flex items-center px-3.5 py-2.5 text-xs font-medium text-left">
-        <i data-lucide="sliders-horizontal" class="w-4 h-4 mr-3"></i> Optimization Schedule
-      </button>
-      
-      <button onclick="switchTab('execution')" id="nav-execution" class="nav-item text-[var(--text-secondary)] hover:text-[var(--text-primary)] w-full flex items-center px-3.5 py-2.5 text-xs font-medium text-left">
-        <i data-lucide="terminal" class="w-4 h-4 mr-3"></i> Live Execution (Step 4 &amp; 8)
-      </button>
-      
-      <button onclick="switchTab('results')" id="nav-results" class="nav-item text-[var(--text-secondary)] hover:text-[var(--text-primary)] w-full flex items-center px-3.5 py-2.5 text-xs font-medium text-left">
-        <i data-lucide="bar-chart-2" class="w-4 h-4 mr-3"></i> Benchmark &amp; Parity
-      </button>
-      
-      <p class="text-[10px] font-bold text-[var(--text-secondary)] uppercase tracking-wider mt-5 mb-1.5 px-3">Compiler Tools</p>
-      
-      <button onclick="switchTab('diag')" id="nav-diag" class="nav-item text-[var(--text-secondary)] hover:text-[var(--text-primary)] w-full flex items-center px-3.5 py-2.5 text-xs font-medium text-left">
-        <i data-lucide="activity" class="w-4 h-4 mr-3"></i> Diagnostics Engine
-      </button>
-      
-      <button onclick="switchTab('ai')" id="nav-ai" class="nav-item text-[var(--text-secondary)] hover:text-[var(--text-primary)] w-full flex items-center px-3.5 py-2.5 text-xs font-medium text-left">
-        <i data-lucide="sparkles" class="w-4 h-4 mr-3 text-[var(--accent-blue)]"></i> AI Assistant
-      </button>
-      
-      <button onclick="switchTab('experimental')" id="nav-experimental" class="nav-item text-[var(--text-secondary)] hover:text-[var(--text-primary)] w-full flex items-center px-3.5 py-2.5 text-xs font-medium text-left">
-        <i data-lucide="flask-conical" class="w-4 h-4 mr-3"></i> Scaffolding IDE
-      </button>
-    </nav>
 
-    <div class="p-3 border-t border-[var(--border-card)]">
-      <div class="flex items-center justify-between px-2 py-1">
-        <span class="text-[11px] font-medium text-[var(--text-secondary)]">Theme Mode</span>
-        <button onclick="toggleTheme()" id="btn-theme-toggle" class="p-1.5 rounded-full border border-[var(--border-card)] hover:bg-[var(--bg-secondary)] transition-all">
-          <i data-lucide="moon" class="w-3.5 h-3.5 text-[var(--text-primary)]"></i>
+    <nav class="nav" id="nav">
+      <p class="nav-head">Workspace</p>
+      <div class="nav-group">
+        <button class="nav-item active" id="nav-overview" data-view="overview">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-grid"/></svg>
+          Overview
         </button>
       </div>
-      <p id="build-footer" class="text-[9px] font-mono text-[var(--text-secondary)] px-2 pt-2">TATVA</p>
+
+      <p class="nav-head">Compile Pipeline</p>
+      <div class="nav-group" id="nav-stages"><!-- built by studio.js from STAGES --></div>
+
+      <p class="nav-head">Tools</p>
+      <div class="nav-group">
+        <button class="nav-item" id="nav-report" data-view="report">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chart"/></svg>
+          Benchmark Report
+        </button>
+        <button class="nav-item" id="nav-diag" data-view="diag">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-pulse"/></svg>
+          Diagnostics
+        </button>
+        <button class="nav-item" id="nav-assistant" data-view="assistant">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-spark"/></svg>
+          Assistant
+        </button>
+        <button class="nav-item" id="nav-scaffold" data-view="scaffold">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-flask"/></svg>
+          Project Scaffolding
+        </button>
+      </div>
+    </nav>
+
+    <div class="sidebar-foot">
+      <button class="health" id="health-btn" title="Toolchain status — click for detail">
+        <span class="dot" id="health-dot"></span>
+        <span id="health-text">Checking toolchain…</span>
+      </button>
     </div>
   </aside>
 
-  <!-- MAIN CONTENT AREA -->
-  <main class="flex-1 flex flex-col relative h-full overflow-hidden bg-[var(--bg-surface)]">
-    
-    <!-- TOP HEADER BAR -->
-    <header class="h-16 border-b border-[var(--border-card)] w-full flex items-center justify-between px-8 z-10 sticky top-0 shrink-0 bg-[var(--bg-card)]">
-      <div class="flex items-center space-x-2 text-xs font-medium text-[var(--text-secondary)]">
-        <span>Desktop Workspace</span>
-        <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
-        <span class="text-[var(--text-primary)] font-mono font-semibold bg-[var(--bg-secondary)] border border-[var(--border-card)] px-2.5 py-1 rounded-full">RISC-V Optimization Studio</span>
-      </div>
-      
-      <div class="flex items-center space-x-4">
-        <!-- Live Compiler Status Beacon -->
-        <div class="flex items-center space-x-2 text-xs font-medium bg-[var(--bg-secondary)] border border-[var(--border-card)] px-3 py-1.5 rounded-full">
-          <span class="relative flex h-2 w-2">
-            <span id="compiler-ping" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-[var(--accent-green)] opacity-75 hidden"></span>
-            <span id="compiler-dot" class="relative inline-flex rounded-full h-2 w-2 bg-gray-400"></span>
-          </span>
-          <span id="compiler-status-text" class="text-[var(--text-primary)] font-mono text-xs">Compiler: Idle</span>
-        </div>
-
-        <button onclick="toggleTheme()" class="p-2 rounded-full border border-[var(--border-card)] hover:bg-[var(--bg-secondary)] text-[var(--text-primary)] transition-all">
-          <i data-lucide="sun" class="w-4 h-4 hidden dark:block"></i>
-          <i data-lucide="moon" class="w-4 h-4 block dark:hidden"></i>
-        </button>
-      </div>
-    </header>
-
-    <!-- INLINE VALIDATION WARNING BADGE -->
-    <div id="validation-banner" class="hidden mx-8 mt-4 p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-600 dark:text-amber-400 text-xs font-medium flex items-center justify-between">
-      <div class="flex items-center space-x-2">
-        <i data-lucide="alert-circle" class="w-4 h-4 shrink-0"></i>
-        <span id="validation-msg">Please select a valid target architecture and model file before executing.</span>
-      </div>
-      <button onclick="document.getElementById('validation-banner').classList.add('hidden')" class="text-amber-500 hover:text-amber-700">
-        <i data-lucide="x" class="w-4 h-4"></i>
+  <!-- ========================================================== MAIN -->
+  <main class="main">
+    <div class="topbar">
+      <div class="crumb">TATVA &nbsp;›&nbsp; <b id="crumb-view">Overview</b></div>
+      <div class="spacer"></div>
+      <span class="badge info" id="mode-badge">Local · offline</span>
+      <button class="btn ghost" id="btn-theme" title="Switch light / dark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-sun"/></svg>
       </button>
     </div>
 
-    <!-- VIEWS CONTAINER -->
-    <div class="p-8 overflow-y-auto h-full pb-20">
-      
-      <!-- ================= 1. DASHBOARD VIEW ================= -->
-      <section id="view-dashboard" class="space-y-6">
-        <div class="flex justify-between items-end">
-          <div>
-            <h1 class="text-2xl font-bold text-[var(--text-primary)] tracking-tight">Telemetry Command Center</h1>
-            <p class="text-[var(--text-secondary)] text-xs mt-1">High-level overview of RISC-V model optimization benchmarks, cycle latencies, and execution telemetry.</p>
-          </div>
-          <button onclick="switchTab('model')" class="bg-[var(--accent-blue)] text-white font-semibold py-2 px-5 rounded-full text-xs flex items-center transition-all shadow-sm hover:opacity-90">
-            <i data-lucide="plus" class="w-4 h-4 mr-1.5"></i> New Optimization Run
-          </button>
+    <div class="rail" id="rail"><!-- built by studio.js from STAGES --></div>
+
+    <div class="view-scroll">
+
+      <!-- ==================================================== OVERVIEW -->
+      <section class="view" id="view-overview">
+        <div class="page-head">
+          <div class="eyebrow">Overview</div>
+          <h1>Compile a model for bare-metal RISC-V</h1>
+          <p>Five stages, in order. Each one unlocks when the one before it has produced a result,
+             so you never have to guess what to do next. Everything runs on this machine — no
+             account, no upload, no network call.</p>
         </div>
 
-        <!-- KPI GRID (NULL STATE STARTUP) -->
-        <div class="grid grid-cols-1 md:grid-cols-4 gap-5">
-          <div class="gemini-card p-5">
-            <p class="text-[var(--text-secondary)] text-xs font-semibold uppercase tracking-wider">Average Speedup</p>
-            <div class="flex items-end justify-between mt-2">
-              <span id="kpi-speedup" class="text-2xl font-bold font-mono text-[var(--text-primary)]">--</span>
-              <span class="text-[var(--text-secondary)] text-[11px] font-medium bg-[var(--bg-secondary)] border border-[var(--border-card)] px-2 py-0.5 rounded-full">No active run</span>
-            </div>
-          </div>
-          <div class="gemini-card p-5">
-            <p class="text-[var(--text-secondary)] text-xs font-semibold uppercase tracking-wider">Memory Savings</p>
-            <div class="flex items-end justify-between mt-2">
-              <span id="kpi-memory" class="text-2xl font-bold font-mono text-[var(--text-primary)]">0 MB</span>
-              <span class="text-[var(--text-secondary)] text-[11px] font-medium bg-[var(--bg-secondary)] border border-[var(--border-card)] px-2 py-0.5 rounded-full">Baseline FP32</span>
-            </div>
-          </div>
-          <div class="gemini-card p-5">
-            <p class="text-[var(--text-secondary)] text-xs font-semibold uppercase tracking-wider">Compiled Passes</p>
-            <div class="flex items-end justify-between mt-2">
-              <span id="kpi-passes" class="text-2xl font-bold font-mono text-[var(--text-primary)]">0</span>
-              <span class="text-[var(--text-secondary)] text-[11px] font-mono bg-[var(--bg-secondary)] border border-[var(--border-card)] px-2 py-0.5 rounded-full">C99 Artifacts</span>
-            </div>
-          </div>
-          <div class="gemini-card p-5">
-            <p class="text-[var(--text-secondary)] text-xs font-semibold uppercase tracking-wider">Active Target</p>
-            <div class="flex items-center justify-between mt-2">
-              <span id="kpi-target" class="text-xl font-bold font-mono text-[var(--text-primary)]">RV64GC</span>
-              <span class="text-[var(--accent-blue)] text-[11px] font-mono bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded-full">QEMU Sim</span>
-            </div>
-          </div>
+        <div class="grid four">
+          <div class="stat"><div class="k">Model</div><div class="v" id="ov-model">—</div><div class="n" id="ov-model-n">Nothing loaded</div></div>
+          <div class="stat"><div class="k">Target</div><div class="v" id="ov-target">RV64GC</div><div class="n" id="ov-target-n">Default 64-bit</div></div>
+          <div class="stat"><div class="k">Speed-up</div><div class="v gold" id="ov-speedup">—</div><div class="n">Measured under QEMU</div></div>
+          <div class="stat"><div class="k">Stage</div><div class="v" id="ov-stage">01</div><div class="n" id="ov-stage-n">Input</div></div>
         </div>
 
-        <!-- MAIN DASHBOARD CONTENT GRID -->
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <!-- RECENT COMPILATIONS TABLE (EMPTY STATE) -->
-          <div class="lg:col-span-2 gemini-card p-6">
-            <div class="flex justify-between items-center mb-4">
-              <h2 class="text-sm font-bold text-[var(--text-primary)] flex items-center">
-                <i data-lucide="history" class="w-4 h-4 mr-2 text-[var(--accent-blue)]"></i> Recent Compilation Telemetry
-              </h2>
-              <span class="text-[11px] text-[var(--text-secondary)] font-mono">Content-Hash Verification Active</span>
-            </div>
-            
-            <div id="recent-runs-container" class="py-10 text-center border border-dashed border-[var(--border-card)] rounded-2xl bg-[var(--bg-secondary)]/50">
-              <i data-lucide="inbox" class="w-10 h-10 mx-auto mb-2 text-[var(--text-secondary)] opacity-60"></i>
-              <p class="text-xs font-medium text-[var(--text-secondary)]">No optimization runs recorded yet. Upload a model and launch a pass to view telemetry.</p>
-              <button onclick="switchTab('model')" class="mt-3 text-xs text-[var(--accent-blue)] font-semibold hover:underline">
-                Upload Model File &rarr;
-              </button>
-            </div>
+        <div class="card mt">
+          <h2>How TATVA works</h2>
+          <p class="sub">The same five stages appear in the rail above and in the sidebar. Click any one to jump to it.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th style="width:56px">Stage</th><th style="width:130px">Name</th><th>What happens</th><th style="width:110px">Status</th></tr></thead>
+              <tbody id="ov-stage-table"></tbody>
+            </table>
           </div>
-
-          <!-- QUICK MODEL DROP IMPORTER -->
-          <div id="dashboard-dropzone" class="gemini-card p-6 flex flex-col items-center justify-center border-dashed border-2 border-[var(--border-card)] hover:border-[var(--accent-blue)] transition-all cursor-pointer text-center relative" onclick="switchTab('model')">
-            <div class="w-14 h-14 rounded-full bg-[var(--bg-secondary)] border border-[var(--border-card)] flex items-center justify-center mb-3 text-[var(--accent-blue)]">
-              <i data-lucide="upload-cloud" class="w-7 h-7"></i>
-            </div>
-            <h3 class="font-bold text-sm text-[var(--text-primary)] mb-1">Import Model File</h3>
-            <p class="text-[var(--text-secondary)] text-xs mb-4">Drag &amp; drop model file (<code class="font-mono text-[11px]">.onnx, .pt, .pth, .tflite, .keras, .h5</code>)<br>or click to browse filesystem.</p>
-            <button class="bg-[var(--bg-secondary)] border border-[var(--border-card)] hover:border-[var(--accent-blue)] text-[var(--text-primary)] text-xs font-semibold py-2 px-5 rounded-full transition-all">
-              Browse Files...
+          <div class="row mt">
+            <button class="btn primary" data-goto="s1">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-play"/></svg>
+              Start at stage 01
             </button>
+            <button class="btn" id="btn-load-sample">Load a bundled sample model</button>
           </div>
         </div>
-      </section>
 
-      <!-- ================= 2. MODEL INPUT & DROP VIEW ================= -->
-      <section id="view-model" class="space-y-6 hidden">
-        <div>
-          <h1 class="text-2xl font-bold text-[var(--text-primary)] tracking-tight">Model Input &amp; Drag-and-Drop Inspector</h1>
-          <p class="text-[var(--text-secondary)] text-xs mt-1">Select or drop model files (.onnx, .pt, .pth, .tflite, .keras, .h5). Inspect layer counts and detect bottlenecks.</p>
-        </div>
-
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <!-- Dropzone & File Dialog Card -->
-          <div class="lg:col-span-1 gemini-card p-6 space-y-5">
-            <h2 class="text-sm font-bold text-[var(--text-primary)] flex items-center">
-              <i data-lucide="file-code" class="w-4 h-4 mr-2 text-[var(--accent-blue)]"></i> Model File Selection
-            </h2>
-            
-            <!-- Drag and Drop Target Area -->
-            <div id="drop-target-area" class="border-2 border-dashed border-[var(--border-card)] hover:border-[var(--accent-blue)] rounded-2xl p-6 text-center transition-all bg-[var(--bg-secondary)]/30 cursor-pointer" onclick="browseModelFile()">
-              <i data-lucide="file-plus" class="w-8 h-8 mx-auto mb-2 text-[var(--accent-blue)]"></i>
-              <p class="text-xs font-semibold text-[var(--text-primary)]">Drop Model File Here</p>
-              <p class="text-[11px] text-[var(--text-secondary)] mt-1">Accepts .onnx, .pt, .pth, .tflite, .keras, .h5</p>
-              <button type="button" class="mt-3 bg-[var(--bg-card)] border border-[var(--border-card)] text-xs font-semibold px-4 py-1.5 rounded-full text-[var(--text-primary)] hover:border-[var(--accent-blue)]">
-                Browse System Files
-              </button>
-            </div>
-
+        <div class="card">
+          <h2>What is ready, and what is not</h2>
+          <p class="sub">Taken from the beta scope. Experimental features work but are not yet trustworthy for a production decision.</p>
+          <div class="grid three">
             <div>
-              <label class="text-[11px] font-semibold text-[var(--text-secondary)] block mb-1">Model File Path</label>
-              <input type="text" id="input-model-path" placeholder="Select or drop a model file..." class="w-full bg-[var(--bg-secondary)] border border-[var(--border-card)] rounded-xl px-3 py-2 text-xs font-mono text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-blue)]">
+              <span class="badge available">Available</span>
+              <ul class="tiny muted" style="padding-left:17px;margin-top:9px;line-height:1.75">
+                <li>ONNX model input</li>
+                <li>Graph and operator analysis</li>
+                <li>Softmax fusion pass</li>
+                <li>RV32IMC – RV64GC cross-compile</li>
+                <li>Desktop app, light and dark</li>
+              </ul>
             </div>
+            <div>
+              <span class="badge experimental">Experimental</span>
+              <ul class="tiny muted" style="padding-left:17px;margin-top:9px;line-height:1.75">
+                <li>INT8 quantization</li>
+                <li>Plain-English diagnostics</li>
+                <li>Natural-language config</li>
+                <li>QEMU / Renode validation</li>
+              </ul>
+            </div>
+            <div>
+              <span class="badge roadmap">Roadmap</span>
+              <ul class="tiny muted" style="padding-left:17px;margin-top:9px;line-height:1.75">
+                <li>Vector and matrix extensions</li>
+                <li>Wider operator coverage</li>
+                <li>More boards and cores</li>
+                <li>Hosted service</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
 
-            <button onclick="runModelAnalysis()" class="w-full bg-[var(--accent-blue)] text-white font-semibold py-2.5 px-4 rounded-full text-xs transition-all shadow-sm hover:opacity-90 flex items-center justify-center">
-              <i data-lucide="search" class="w-3.5 h-3.5 mr-1.5"></i> Inspect &amp; Analyze Graph
+      <!-- ==================================================== 01 INPUT -->
+      <section class="view hidden" id="view-s1">
+        <div class="page-head">
+          <div class="eyebrow">Stage 01 · Input</div>
+          <h1>Load a trained model and pick the chip</h1>
+          <p>TATVA needs two things to start: the model you already trained, and the RISC-V
+             configuration you intend to run it on. Nothing is sent anywhere — the file is read
+             from disk in this process.</p>
+        </div>
+
+        <div class="notice err hidden" id="s1-error">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-alert"/></svg>
+          <span id="s1-error-text"></span>
+        </div>
+
+        <div class="card">
+          <h2>1 · The model</h2>
+          <p class="sub">ONNX is the supported format. PyTorch and TF/Keras files can be selected but are exported through ONNX first.</p>
+
+          <div class="drop" id="drop">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-upload"/></svg>
+            <div>Drop a <b>.onnx</b> file here</div>
+            <div class="tiny muted" style="margin-top:4px">or browse for one below</div>
+          </div>
+
+          <label class="field" style="margin-top:16px">
+            <span class="lbl">Model file path</span>
+            <input class="input" id="model-path" placeholder="C:\path\to\model.onnx" spellcheck="false">
+          </label>
+
+          <div class="row">
+            <button class="btn" id="btn-browse">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-file"/></svg>
+              Browse…
+            </button>
+            <button class="btn" id="btn-sample-2">Use a bundled sample</button>
+          </div>
+
+          <!-- The bundled models, as a visible choice. This used to silently load the
+               first one, so there was no way to reach the transformer fixture -- the
+               only bundled model with an attention pattern, and therefore the only one
+               where the fusion pass has anything to fuse. -->
+          <div class="hidden mt" id="s1-samples">
+            <div class="tiny muted" style="margin-bottom:9px">Bundled with this install — pick one:</div>
+            <div class="grid two" id="s1-sample-grid"></div>
+          </div>
+
+          <div class="empty mt" id="s1-empty">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><use href="#i-file"/></svg>
+            <div>No model loaded yet.</div>
+          </div>
+
+          <div class="hidden mt" id="s1-summary">
+            <div class="grid four">
+              <div class="stat"><div class="k">File</div><div class="v" style="font-size:14px" id="s1-name">—</div><div class="n" id="s1-format">—</div></div>
+              <div class="stat"><div class="k">Size</div><div class="v" id="s1-size">—</div><div class="n">on disk</div></div>
+              <div class="stat"><div class="k">Operators</div><div class="v" id="s1-ops">—</div><div class="n">in the ONNX graph</div></div>
+              <div class="stat"><div class="k">SHA-256</div><div class="v" style="font-size:13px" id="s1-hash">—</div><div class="n">first 12 hex digits</div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>2 · The target chip</h2>
+          <p class="sub">Read live from the compiler's target registry, so this list is always what the compiler will actually accept.</p>
+          <div class="grid three" id="target-grid"></div>
+          <div class="notice warn hidden mt" id="target-warn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-alert"/></svg>
+            <span id="target-warn-text"></span>
+          </div>
+        </div>
+
+        <div class="row end">
+          <button class="btn primary big" id="btn-s1-next" disabled>Continue to 02 Analyze →</button>
+        </div>
+      </section>
+
+      <!-- ==================================================== 02 ANALYZE -->
+      <section class="view hidden" id="view-s2">
+        <div class="page-head">
+          <div class="eyebrow">Stage 02 · Analyze</div>
+          <h1>Read the graph, the operators, the requirements</h1>
+          <p>TATVA imports the model into its own intermediate representation and counts what is
+             actually there. This is where an attention bottleneck — softmax feeding a matrix
+             multiply — gets detected, because that is the subgraph stage 04 can speed up.</p>
+        </div>
+
+        <div class="card">
+          <div class="row between">
+            <div>
+              <h2>Graph analysis</h2>
+              <p class="sub" style="margin-bottom:0">Runs the same importer the CLI's <span class="mono">tatva analyze</span> uses.</p>
+            </div>
+            <button class="btn primary" id="btn-analyze">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-scan"/></svg>
+              Run analysis
             </button>
           </div>
 
-          <!-- Visual File Summary & Metadata Card -->
-          <div class="lg:col-span-2 gemini-card p-6">
-            <h2 class="text-sm font-bold text-[var(--text-primary)] mb-4 flex items-center">
-              <i data-lucide="layers" class="w-4 h-4 mr-2 text-[var(--accent-green)]"></i> File Summary &amp; IR Analysis
-            </h2>
-
-            <div id="file-summary-card" class="space-y-5">
-              <div id="summary-empty-state" class="py-12 text-center text-[var(--text-secondary)] text-xs">
-                <i data-lucide="file-text" class="w-10 h-10 mx-auto mb-2 opacity-50"></i>
-                No model loaded yet. Drop a model file or select one to view immediate layer breakdown.
-              </div>
-
-              <div id="summary-details-card" class="hidden space-y-4">
-                <div class="p-4 rounded-2xl bg-[var(--bg-secondary)] border border-[var(--border-card)] flex items-center justify-between">
-                  <div class="flex items-center space-x-3">
-                    <div class="w-10 h-10 rounded-xl bg-blue-500/10 text-[var(--accent-blue)] flex items-center justify-center font-bold text-xs font-mono">
-                      IR
-                    </div>
-                    <div>
-                      <p id="sum-filename" class="font-bold text-xs font-mono text-[var(--text-primary)]">resnet18.onnx</p>
-                      <p id="sum-format" class="text-[11px] text-[var(--text-secondary)]">ONNX IR Model • 44.7 MB</p>
-                    </div>
-                  </div>
-                  <span id="sum-status" class="bg-emerald-500/10 text-[var(--accent-green)] border border-emerald-500/20 text-[11px] font-semibold px-3 py-1 rounded-full">
-                    Status: Ready for Step 1
-                  </span>
-                </div>
-
-                <div class="grid grid-cols-3 gap-3">
-                  <div class="p-3 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-card)]">
-                    <p class="text-[10px] uppercase font-bold text-[var(--text-secondary)]">Layer / Op Count</p>
-                    <p id="val-total-ops" class="font-mono text-xs font-bold text-[var(--text-primary)] mt-0.5">-- Ops</p>
-                  </div>
-                  <div class="p-3 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-card)]">
-                    <p class="text-[10px] uppercase font-bold text-[var(--text-secondary)]">SHA256 Digest</p>
-                    <p id="val-sha256" class="font-mono text-xs font-bold text-[var(--text-primary)] mt-0.5">--</p>
-                  </div>
-                  <div class="p-3 rounded-xl bg-[var(--bg-secondary)] border border-[var(--border-card)]">
-                    <p class="text-[10px] uppercase font-bold text-[var(--text-secondary)]">Bottleneck</p>
-                    <p id="val-bottleneck" class="font-mono text-xs font-bold text-[var(--text-primary)] mt-0.5">UNCHECKED</p>
-                  </div>
-                </div>
-
-                <div id="histogram-container" class="hidden pt-2">
-                  <p class="text-xs font-semibold text-[var(--text-secondary)] mb-2">Operator Histogram</p>
-                  <div id="op-histogram-list" class="space-y-1.5 font-mono text-xs bg-[var(--bg-secondary)] p-3 rounded-xl border border-[var(--border-card)]">
-                  </div>
-                </div>
-              </div>
-            </div>
+          <div class="empty mt" id="s2-empty">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><use href="#i-scan"/></svg>
+            <div>Not analyzed yet. Loading the graph takes a few seconds the first time.</div>
           </div>
+
+          <div class="notice err hidden mt" id="s2-error">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-alert"/></svg>
+            <span id="s2-error-text"></span>
+          </div>
+
+          <div class="hidden mt" id="s2-result">
+            <div class="grid three">
+              <div class="stat"><div class="k">Total operators</div><div class="v" id="s2-total">—</div><div class="n">calls in the graph</div></div>
+              <div class="stat"><div class="k">Distinct kinds</div><div class="v" id="s2-distinct">—</div><div class="n">unique operator types</div></div>
+              <div class="stat"><div class="k">Attention pattern</div><div class="v" id="s2-bottleneck">—</div><div class="n">softmax feeding matmul</div></div>
+            </div>
+
+            <div class="notice info mt" id="s2-note">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg>
+              <span id="s2-note-text"></span>
+            </div>
+
+            <h2 style="margin-top:20px">Operator histogram</h2>
+            <p class="sub">Sorted by how often each one appears.</p>
+            <div id="s2-histogram"></div>
+          </div>
+        </div>
+
+        <div class="row end">
+          <button class="btn primary big" id="btn-s2-next" disabled>Continue to 03 Map →</button>
         </div>
       </section>
 
-      <!-- ================= 3. TARGET REGISTRY (STEP 2) VIEW ================= -->
-      <section id="view-target" class="space-y-6 hidden">
-        <div>
-          <h1 class="text-2xl font-bold text-[var(--text-primary)] tracking-tight">Target Architecture Registry (Step 2)</h1>
-          <p class="text-[var(--text-secondary)] text-xs mt-1">Select target bare-metal RISC-V hardware variant and verify GCC cross-compiler &amp; QEMU readiness.</p>
+      <!-- ==================================================== 03 MAP -->
+      <section class="view hidden" id="view-s3">
+        <div class="page-head">
+          <div class="eyebrow">Stage 03 · Map</div>
+          <h1>Match every operator against the chip's capability</h1>
+          <p>Each operator in the graph gets checked against what this target can actually execute,
+             and against how TATVA will lower it: a fused kernel, a scalar loop nest, or nothing at
+             all. An operator with no lowering is a compile failure in stage 05 — better to find it
+             here.</p>
         </div>
 
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
-          <!-- Card 1: RV64GC -->
-          <div onclick="selectTarget('RV64GC')" id="target-card-RV64GC" class="target-card selected gemini-card p-5 cursor-pointer">
-            <div class="flex justify-between items-start mb-3">
-              <div class="w-9 h-9 rounded-xl bg-blue-500/10 text-[var(--accent-blue)] flex items-center justify-center font-bold font-mono text-xs">
-                64
-              </div>
-              <span class="text-[10px] font-semibold uppercase bg-blue-500/10 text-[var(--accent-blue)] border border-blue-500/20 px-2 py-0.5 rounded-full">Default Target</span>
+        <div class="card">
+          <div class="row between">
+            <div>
+              <h2>Capability mapping</h2>
+              <p class="sub" style="margin-bottom:0">Model graph × selected target.</p>
             </div>
-            <h3 class="text-base font-bold font-mono text-[var(--text-primary)]">RV64GC</h3>
-            <p class="text-[var(--text-secondary)] text-xs mt-1">64-bit RISC-V with IMAFDC extensions &amp; Hard Float ABI.</p>
-            <div class="space-y-1 font-mono text-[11px] text-[var(--text-secondary)] border-t border-[var(--border-card)] pt-3 mt-3">
-              <p>GCC march: rv64gc</p>
-              <p>GCC mabi:  lp64d</p>
-              <p>Vector:    Scalar (None)</p>
-            </div>
-          </div>
-
-          <!-- Card 2: RV32EMC -->
-          <div onclick="selectTarget('RV32EMC')" id="target-card-RV32EMC" class="target-card gemini-card p-5 cursor-pointer">
-            <div class="flex justify-between items-start mb-3">
-              <div class="w-9 h-9 rounded-xl bg-emerald-500/10 text-[var(--accent-green)] flex items-center justify-center font-bold font-mono text-xs">
-                32
-              </div>
-              <span class="text-[10px] font-semibold uppercase bg-emerald-500/10 text-[var(--accent-green)] border border-emerald-500/20 px-2 py-0.5 rounded-full">Embedded SRAM</span>
-            </div>
-            <h3 class="text-base font-bold font-mono text-[var(--text-primary)]">RV32EMC</h3>
-            <p class="text-[var(--text-secondary)] text-xs mt-1">32-bit Embedded RISC-V with 16-register space.</p>
-            <div class="space-y-1 font-mono text-[11px] text-[var(--text-secondary)] border-t border-[var(--border-card)] pt-3 mt-3">
-              <p>GCC march: rv32emc</p>
-              <p>GCC mabi:  ilp32e</p>
-              <p>Vector:    Scalar (None)</p>
-            </div>
-          </div>
-
-          <!-- Card 3: RV64GCV -->
-          <div onclick="selectTarget('RV64GCV')" id="target-card-RV64GCV" class="target-card gemini-card p-5 cursor-pointer">
-            <div class="flex justify-between items-start mb-3">
-              <div class="w-9 h-9 rounded-xl bg-purple-500/10 text-purple-500 flex items-center justify-center font-bold font-mono text-xs">
-                V
-              </div>
-              <span class="text-[10px] font-semibold uppercase bg-purple-500/10 text-purple-500 border border-purple-500/20 px-2 py-0.5 rounded-full">EXPERIMENTAL</span>
-            </div>
-            <h3 class="text-base font-bold font-mono text-[var(--text-primary)]">RV64GCV</h3>
-            <p class="text-[var(--text-secondary)] text-xs mt-1">64-bit RISC-V with Hardware Vector Extension 1.0.</p>
-            <div class="space-y-1 font-mono text-[11px] text-[var(--text-secondary)] border-t border-[var(--border-card)] pt-3 mt-3">
-              <p>GCC march: rv64gcv</p>
-              <p>GCC mabi:  lp64d</p>
-              <p>Vector:    RVV 1.0 Enabled</p>
-            </div>
-          </div>
-        </div>
-
-        <!-- Step 2: Toolchain Verification Control -->
-        <div class="gemini-card p-5 flex items-center justify-between">
-          <div>
-            <h3 class="text-sm font-bold text-[var(--text-primary)]">Step 2: Validate Toolchain Configuration</h3>
-            <p class="text-[var(--text-secondary)] text-xs mt-0.5">Validates host GCC march/mabi flags and QEMU simulator readiness for <span id="lbl-selected-target" class="font-mono font-bold text-[var(--accent-blue)]">RV64GC</span>. <span class="opacity-70">Simulation-only check; physical board USB/JTAG scanning is separate in Step 8.</span></p>
-          </div>
-          <button onclick="verifyToolchainConfiguration()" class="bg-[var(--accent-blue)] text-white font-semibold py-2 px-5 rounded-full text-xs shadow-sm hover:opacity-90">
-            Validate Toolchain Configuration
-          </button>
-        </div>
-      </section>
-
-      <!-- ================= 4. OPTIMIZATION SCHEDULE VIEW ================= -->
-      <section id="view-opt" class="space-y-6 hidden">
-        <div>
-          <h1 class="text-2xl font-bold text-[var(--text-primary)] tracking-tight">Schedule Optimization Passes</h1>
-          <p class="text-[var(--text-secondary)] text-xs mt-1">Configure custom TVM schedule mutators, fast-softmax kernel selection, and calibrated INT8 quantization passes.</p>
-        </div>
-
-        <div class="grid grid-cols-1 gap-4">
-          <div id="pass-card-fuse" class="toggle-card active gemini-card p-5 flex items-center justify-between cursor-pointer" onclick="togglePass('fuse')">
-            <div class="flex items-center space-x-4">
-              <div class="w-10 h-10 rounded-xl bg-emerald-500/10 text-[var(--accent-green)] flex items-center justify-center">
-                <i data-lucide="zap" class="w-5 h-5"></i>
-              </div>
-              <div>
-                <div class="flex items-center space-x-2">
-                  <h3 class="font-bold text-xs text-[var(--text-primary)]">Schraudolph Fast Softmax Kernel Fusion</h3>
-                  <span class="bg-emerald-500/10 text-[var(--accent-green)] text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full border border-emerald-500/20">Single-Pass Fusion</span>
-                </div>
-                <p class="text-[var(--text-secondary)] text-xs mt-0.5">Replaces 4-pass heap-allocated Softmax loops with a single-pass register-allocated fast exponential approximation kernel.</p>
-              </div>
-            </div>
-            <input type="checkbox" id="chk-pass-fuse" checked class="w-4 h-4 accent-[var(--accent-blue)]">
-          </div>
-
-          <div id="pass-card-quant" class="toggle-card gemini-card p-5 flex items-center justify-between cursor-pointer" onclick="togglePass('quant')">
-            <div class="flex items-center space-x-4">
-              <div class="w-10 h-10 rounded-xl bg-blue-500/10 text-[var(--accent-blue)] flex items-center justify-center">
-                <i data-lucide="layers" class="w-5 h-5"></i>
-              </div>
-              <div>
-                <div class="flex items-center space-x-2">
-                  <h3 class="font-bold text-xs text-[var(--text-primary)]">Dynamic 8-Bit Integer Quantization</h3>
-                  <span class="bg-blue-500/10 text-[var(--accent-blue)] text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full border border-blue-500/20">INT8 Dynamic</span>
-                </div>
-                <p class="text-[var(--text-secondary)] text-xs mt-0.5">Inserts Quantize-Dequantize (QDQ) nodes to compress FP32 weights into 8-bit dynamic integer tensors.</p>
-              </div>
-            </div>
-            <input type="checkbox" id="chk-pass-quant" class="w-4 h-4 accent-[var(--accent-blue)]">
-          </div>
-        </div>
-
-        <div class="flex justify-end pt-2">
-          <button onclick="switchTab('execution'); startCompilationPipeline()" class="bg-[var(--accent-blue)] text-white font-bold py-2.5 px-6 rounded-full text-xs flex items-center shadow-sm hover:opacity-90">
-            <i data-lucide="play" class="w-4 h-4 mr-2 fill-white"></i> Compile &amp; Run Pipeline
-          </button>
-        </div>
-      </section>
-
-      <!-- ================= 5. EXECUTION & LOGS VIEW ================= -->
-      <section id="view-execution" class="space-y-6 hidden">
-        <div class="flex justify-between items-center">
-          <div>
-            <h1 class="text-2xl font-bold text-[var(--text-primary)] tracking-tight">Live Execution Console &amp; Hardware Deployment</h1>
-            <p class="text-[var(--text-secondary)] text-xs mt-1">Transparent execution config digest, live terminal output stream, and physical board flashing.</p>
-          </div>
-          <button onclick="startCompilationPipeline()" class="bg-[var(--accent-blue)] text-white font-semibold py-2 px-4 rounded-full text-xs flex items-center shadow-sm hover:opacity-90">
-            <i data-lucide="refresh-cw" class="w-3.5 h-3.5 mr-1.5"></i> Run Compilation
-          </button>
-        </div>
-
-        <!-- Step 8: Physical Hardware Deployment Card -->
-        <div class="gemini-card p-5 border-blue-500/20">
-          <div id="hw-status-banner" class="flex items-center space-x-3 bg-blue-500/10 rounded-xl px-4 py-2.5 mb-3 border border-blue-500/20">
-            <span class="relative flex h-2 w-2">
-              <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-[var(--accent-blue)] opacity-75"></span>
-              <span class="relative inline-flex rounded-full h-2 w-2 bg-[var(--accent-blue)]"></span>
-            </span>
-            <span class="text-[var(--accent-blue)] font-mono text-xs font-bold">[STEP 8 - PHYSICAL HARDWARE DEPLOYMENT] SIMULATION MODE — No USB/JTAG board scanned</span>
-          </div>
-          <div class="flex items-center space-x-4">
-            <button onclick="scanPhysicalHardwareBoard()" class="bg-[var(--bg-secondary)] hover:bg-[var(--border-card)] border border-[var(--border-card)] text-[var(--text-primary)] font-semibold py-2 px-4 rounded-full text-xs transition-all flex items-center">
-              <i data-lucide="usb" class="w-3.5 h-3.5 mr-2 text-[var(--accent-blue)]"></i> Scan for Connected RISC-V Hardware (USB / JTAG)
+            <button class="btn primary" id="btn-map">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-map"/></svg>
+              Run mapping
             </button>
-            <p class="text-[var(--text-secondary)] text-xs">Only scans physical USB/JTAG ports when requested at Step 8.</p>
           </div>
-        </div>
 
-        <!-- Execution Terminal & Digest Stream -->
-        <div class="gemini-card p-4 flex flex-col font-mono text-xs bg-[var(--terminal-bg)] text-[var(--terminal-text)] border border-[var(--border-card)] rounded-2xl">
-          <div class="flex items-center justify-between pb-3 border-b border-gray-700/50 text-gray-400 text-[11px]">
-            <div class="flex items-center space-x-2">
-              <span class="w-2.5 h-2.5 rounded-full bg-red-500 inline-block"></span>
-              <span class="w-2.5 h-2.5 rounded-full bg-yellow-500 inline-block"></span>
-              <span class="w-2.5 h-2.5 rounded-full bg-green-500 inline-block"></span>
-              <span class="ml-2 text-gray-300">tatva-terminal output stream</span>
+          <div class="empty mt" id="s3-empty">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><use href="#i-map"/></svg>
+            <div>Not mapped yet.</div>
+          </div>
+
+          <div class="notice err hidden mt" id="s3-error">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-alert"/></svg>
+            <span id="s3-error-text"></span>
+          </div>
+
+          <div class="hidden mt" id="s3-result">
+            <div class="notice mt" id="s3-verdict">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg>
+              <span id="s3-verdict-text"></span>
             </div>
-            <span id="terminal-version"></span>
-          </div>
 
-          <div id="terminal-stream" class="flex-1 min-h-[300px] overflow-y-auto pt-3 space-y-1.5 text-gray-300 leading-relaxed font-mono">
-            <p class="text-gray-500">=== TATVA RISC-V Optimization Studio ===</p>
-            <p class="text-gray-500">Ready. Select a target architecture and model file to launch pipeline.</p>
-          </div>
-        </div>
-      </section>
+            <div id="s3-warnings" class="stack mt"></div>
 
-      <!-- ================= 6. RESULTS & PARITY VIEW ================= -->
-      <section id="view-results" class="space-y-6 hidden">
-        <div>
-          <h1 class="text-2xl font-bold text-[var(--text-primary)] tracking-tight">Benchmark Results &amp; Numerical Parity</h1>
-          <p class="text-[var(--text-secondary)] text-xs mt-1">Side-by-side execution latency statistics and output logits Mean Squared Error (MSE) accuracy verification.</p>
-        </div>
-
-        <!-- Empty State vs Chart -->
-        <div id="results-empty-notice" class="gemini-card p-8 text-center text-[var(--text-secondary)] text-xs">
-          <i data-lucide="bar-chart-2" class="w-10 h-10 mx-auto mb-2 opacity-50"></i>
-          Run baseline compilation to display numerical parity and latency graphs.
-        </div>
-
-        <div id="results-charts-panel" class="hidden space-y-6">
-          <div class="gemini-card p-6">
-            <div class="flex justify-between items-center mb-4">
-              <h2 class="text-sm font-bold text-[var(--text-primary)] flex items-center">
-                <i data-lucide="bar-chart-2" class="w-4 h-4 mr-2 text-[var(--accent-green)]"></i> Performance Comparison (Latency &amp; Speedup)
-              </h2>
-              <span class="text-[11px] text-[var(--text-secondary)] font-mono">Instruction-Accurate QEMU Cycle Counter</span>
-            </div>
-            <div class="chart-container h-64">
-              <canvas id="latencyChart"></canvas>
-            </div>
-          </div>
-
-          <div class="gemini-card p-6">
-            <h2 class="text-sm font-bold text-[var(--text-primary)] mb-4 flex items-center">
-              <i data-lucide="table" class="w-4 h-4 mr-2 text-[var(--accent-blue)]"></i> Detailed Telemetry Breakdown
-            </h2>
-
-            <div class="overflow-x-auto">
-              <table class="w-full text-left border-collapse">
-                <thead>
-                  <tr class="border-b border-[var(--border-card)] text-[11px] font-semibold text-[var(--text-secondary)] uppercase">
-                    <th class="py-2.5 px-3">Configuration</th>
-                    <th class="py-2.5 px-3">Simulated Latency</th>
-                    <th class="py-2.5 px-3">Speedup</th>
-                    <th class="py-2.5 px-3">Parity (MSE)</th>
-                    <th class="py-2.5 px-3">Verdict</th>
-                  </tr>
-                </thead>
-                <tbody id="results-table-body" class="font-mono text-xs divide-y divide-[var(--border-card)]">
-                </tbody>
+            <h2 style="margin-top:20px">Operator → lowering</h2>
+            <p class="sub">What the code generator will emit for each operator on <span class="mono" id="s3-target">—</span>.</p>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Operator</th><th class="num" style="width:64px">Count</th><th>Lowering on this target</th><th style="width:118px">Verdict</th></tr></thead>
+                <tbody id="s3-table"></tbody>
               </table>
             </div>
           </div>
         </div>
-      </section>
 
-      <!-- ================= 7. DIAGNOSTICS VIEW ================= -->
-      <section id="view-diag" class="space-y-6 hidden">
-        <div>
-          <h1 class="text-2xl font-bold text-[var(--text-primary)] tracking-tight">Compiler Diagnostics Engine</h1>
-          <p class="text-[var(--text-secondary)] text-xs mt-1">Plain-English failure explanations and automated compiler fix recommendations.</p>
-        </div>
-
-        <div id="diag-container" class="gemini-card p-6 font-mono text-xs leading-relaxed text-[var(--text-primary)]">
-          No compiler failures reported in the active session.
+        <div class="row end">
+          <button class="btn primary big" id="btn-s3-next" disabled>Continue to 04 Optimize →</button>
         </div>
       </section>
 
-      <!-- ================= 8. AI ASSISTANT VIEW ================= -->
-      <section id="view-ai" class="space-y-6 hidden">
-        <div>
-          <h1 class="text-2xl font-bold text-[var(--text-primary)] tracking-tight">AI Assistant</h1>
-          <p class="text-[var(--text-secondary)] text-xs mt-1">Ask your configured LLM (local Ollama, NVIDIA NIM, or Anthropic) about TATVA compiler passes and targets.</p>
+      <!-- ==================================================== 04 OPTIMIZE -->
+      <section class="view hidden" id="view-s4">
+        <div class="page-head">
+          <div class="eyebrow">Stage 04 · Optimize</div>
+          <h1>Choose the passes to apply</h1>
+          <p>Each pass rewrites the graph before code generation. Stage 05 measures the baseline
+             and the optimized build separately, so whatever you pick here gets compared against
+             doing nothing.</p>
         </div>
 
-        <div class="gemini-card p-6 space-y-4">
-          <div id="chat-stream" class="space-y-3 font-mono text-xs max-h-80 overflow-y-auto p-4 rounded-2xl bg-[var(--bg-secondary)] border border-[var(--border-card)]">
-            <div class="p-3 rounded-xl bg-[var(--bg-card)] border border-[var(--border-card)] text-[var(--text-primary)]">
-              <span class="font-bold text-[var(--accent-blue)]">TATVA Assistant:</span> Answers come from the LLM you configure (local Ollama, NVIDIA NIM, or Anthropic). If none is reachable, this panel says so rather than guessing.
-            </div>
-          </div>
+        <div class="card">
+          <h2>Optimization passes</h2>
+          <p class="sub">Click a card to turn a pass on or off.</p>
 
-          <!-- Wide Pill-Shaped Input Box Centered at Bottom -->
-          <div class="flex items-center bg-[var(--bg-secondary)] border border-[var(--border-card)] focus-within:border-[var(--accent-blue)] rounded-full px-4 py-2 space-x-2">
-            <i data-lucide="sparkles" class="w-4 h-4 text-[var(--accent-blue)] shrink-0"></i>
-            <input type="text" id="ai-chat-input" placeholder="Ask about targets, passes, or a compiler error..." class="flex-1 bg-transparent text-xs text-[var(--text-primary)] focus:outline-none">
-            <button onclick="sendAiPrompt()" class="bg-[var(--accent-blue)] text-white font-semibold px-4 py-1.5 rounded-full text-xs hover:opacity-90">
-              Send
+          <div class="grid two">
+            <button class="pick selected" id="pass-fuse" data-pass="fuse">
+              <svg class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg>
+              <div class="row" style="gap:8px">
+                <span class="name">Softmax fusion</span>
+                <span class="badge available">Available</span>
+              </div>
+              <div class="desc">Replaces the generic multi-pass, heap-allocated softmax with a
+                stack-allocated single-pass kernel using Schraudolph's fast exponential.
+                This is the pass the measured gain comes from.</div>
+              <div class="flags">relax → single-pass kernel · accuracy checked against host ONNX Runtime</div>
+            </button>
+
+            <button class="pick" id="pass-quant" data-pass="quantize">
+              <svg class="check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg>
+              <div class="row" style="gap:8px">
+                <span class="name">INT8 quantization</span>
+                <span class="badge experimental">Experimental</span>
+              </div>
+              <div class="desc">Symmetric QDQ quantization with activation scales calibrated at the
+                99.9th percentile. It shrinks the binary, but on a scalar RISC-V core with no INT8
+                dot-product instruction it runs <b>slower</b>, not faster.</div>
+              <div class="flags">smaller footprint · higher cycle count · turn on only if SRAM is the constraint</div>
             </button>
           </div>
-        </div>
-      </section>
 
-      <!-- ================= 9. EXPERIMENTAL SCAFFOLDING IDE VIEW ================= -->
-      <section id="view-experimental" class="space-y-6 hidden">
-        <div class="flex justify-between items-center">
-          <div>
-            <div class="flex items-center space-x-2">
-              <h1 class="text-2xl font-bold text-[var(--text-primary)] tracking-tight">Project Scaffolding Assistant</h1>
-              <span class="text-[10px] font-mono font-bold uppercase bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 px-2 py-0.5 rounded-full">Experimental / Beta</span>
-            </div>
-            <p class="text-[var(--text-secondary)] text-xs mt-1">Generate a complete, runnable RISC-V starter project. Select LLM provider and sync live models before executing.</p>
+          <div class="notice warn hidden mt" id="s4-quant-warn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-alert"/></svg>
+            <span><b>INT8 is on.</b> Expect a higher cycle count than the FP32 baseline on this
+              target. That is a property of scalar RISC-V, not a bug — the gain is footprint.</span>
           </div>
         </div>
 
-        <!-- Provider & Model Configuration Card -->
-        <div class="gemini-card p-5 space-y-4">
-          <h2 class="text-xs font-bold uppercase tracking-wider text-[var(--accent-blue)] flex items-center">
-            <i data-lucide="cpu" class="w-4 h-4 mr-2"></i> Provider &amp; Model Configuration
-          </h2>
+        <div class="card">
+          <h2>Build plan</h2>
+          <p class="sub">Exactly what stage 05 will do.</p>
+          <div class="term" id="s4-plan" style="height:auto;min-height:130px"></div>
+        </div>
 
-          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 text-xs font-mono">
-            <!-- 1. Provider Selector -->
+        <div class="row end">
+          <button class="btn primary big" id="btn-s4-next">Continue to 05 Generate →</button>
+        </div>
+      </section>
+
+      <!-- ==================================================== 05 GENERATE -->
+      <section class="view hidden" id="view-s5">
+        <div class="page-head">
+          <div class="eyebrow">Stage 05 · Generate</div>
+          <h1>Build the RISC-V binary and measure it</h1>
+          <p>TVM emits C99, the RISC-V cross-compiler links it against the minimal runtime, and
+             QEMU runs it in system mode with the cycle counter read on the target itself. Both
+             the baseline and the optimized build are measured, in the same run.</p>
+        </div>
+
+        <div class="notice warn hidden" id="s5-blocked">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-alert"/></svg>
+          <span id="s5-blocked-text"></span>
+        </div>
+
+        <!-- Shown when the preflight finds no cross-compiler or emulator. It carries the
+             button rather than only naming the page, because "go to Diagnostics" is one
+             more thing to work out at the exact moment the run has just refused. -->
+        <div class="notice err hidden" id="s5-toolchain">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-alert"/></svg>
+          <span>The RISC-V toolchain is not installed, so there is nothing to compile with.
+            <button class="btn small" id="btn-goto-install" style="margin-left:8px">Install it now</button></span>
+        </div>
+
+        <div class="card">
+          <div class="row between">
             <div>
-              <label class="block text-[var(--text-secondary)] text-[11px] mb-1 font-sans font-semibold">LLM Provider</label>
-              <select id="scaf-provider-select" onchange="onProviderChanged()" class="w-full bg-[var(--bg-secondary)] border border-[var(--border-card)] rounded-xl px-3 py-2 text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-blue)]">
-                <option value="NVIDIA NIM">NVIDIA NIM</option>
-                <option value="Local (Ollama)">Local (Ollama)</option>
-                <option value="OpenAI">OpenAI</option>
-                <option value="Anthropic">Anthropic</option>
-              </select>
+              <h2>Compile and benchmark</h2>
+              <p class="sub" style="margin-bottom:0">A first run takes a few minutes — two full builds and two emulated runs.</p>
             </div>
-
-            <!-- 2. NVIDIA API Key Input Bar -->
-            <div>
-              <label class="block text-[var(--text-secondary)] text-[11px] mb-1 font-sans font-semibold">NVIDIA API Key</label>
-              <div class="relative flex items-center">
-                <input type="password" id="scaf-nvidia-key" placeholder="Enter nvapi-... key" oninput="saveScaffoldingState()" class="w-full bg-[var(--bg-secondary)] border border-[var(--border-card)] rounded-xl pl-3 pr-8 py-2 text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-blue)] font-mono">
-                <button onclick="toggleScafKeyMask()" type="button" class="absolute right-2.5 text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
-                  <i data-lucide="eye" class="w-3.5 h-3.5"></i>
-                </button>
-              </div>
-            </div>
-
-            <!-- 3. Sync / Refresh Button -->
-            <div class="flex items-end">
-              <button id="btn-sync-nvidia" onclick="syncNvidiaCatalog()" class="w-full bg-[var(--accent-blue)] text-white font-bold py-2 px-3 rounded-xl text-xs flex items-center justify-center hover:opacity-90 transition-all shadow-sm">
-                <i data-lucide="refresh-cw" id="icon-sync-spin" class="w-3.5 h-3.5 mr-1.5"></i> Sync / Refresh Models
+            <div class="row">
+              <button class="btn primary" id="btn-build">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-box"/></svg>
+                Build &amp; benchmark
               </button>
             </div>
+          </div>
 
-            <!-- 4. Model Search Filter -->
-            <div>
-              <label class="block text-[var(--text-secondary)] text-[11px] mb-1 font-sans font-semibold">Search Filter</label>
-              <input type="text" id="scaf-model-filter" placeholder="Search models (llama, deepseek)..." oninput="filterScafModels()" class="w-full bg-[var(--bg-secondary)] border border-[var(--border-card)] rounded-xl px-3 py-2 text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-blue)] font-mono">
+          <div class="bar mt" id="s5-bar" style="display:none"><i></i></div>
+
+          <div class="term mt" id="terminal"></div>
+
+          <div class="row mt tiny muted">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9"><use href="#i-info"/></svg>
+            Timings are QEMU system-mode, <span class="mono">-icount shift=0</span>, cycles converted at a nominal 100&nbsp;MHz. Not silicon.
+          </div>
+        </div>
+
+        <div class="row end">
+          <button class="btn primary big" id="btn-s5-next" disabled>View the benchmark report →</button>
+        </div>
+      </section>
+
+      <!-- ==================================================== REPORT -->
+      <section class="view hidden" id="view-report">
+        <div class="page-head">
+          <div class="eyebrow">Report</div>
+          <h1>Benchmark and numerical parity</h1>
+          <p>Everything below comes from an actual emulated run. If a build has not completed,
+             this page stays empty rather than showing a placeholder number.</p>
+        </div>
+
+        <div class="empty" id="report-empty">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chart"/></svg>
+          <div>No measurement yet. Run stage 05 to populate this page.</div>
+          <button class="btn mt" data-goto="s5" style="margin-top:14px">Go to stage 05</button>
+        </div>
+
+        <div class="hidden" id="report-body">
+          <div class="grid four">
+            <div class="stat"><div class="k">Baseline</div><div class="v" id="r-base">—</div><div class="n">FP32, no passes</div></div>
+            <div class="stat"><div class="k">Optimized</div><div class="v ok" id="r-opt">—</div><div class="n" id="r-opt-n">with selected passes</div></div>
+            <div class="stat"><div class="k">Change</div><div class="v gold" id="r-delta">—</div><div class="n" id="r-delta-n">latency, lower is better</div></div>
+            <div class="stat"><div class="k">Parity</div><div class="v" id="r-parity">—</div><div class="n" id="r-mse">mean squared error vs host</div></div>
+          </div>
+
+          <div class="card mt">
+            <h2>Latency</h2>
+            <p class="sub">Mean wall time per inference under QEMU at a nominal 100&nbsp;MHz.</p>
+            <div class="chart-box"><canvas id="chart-latency"></canvas></div>
+            <div class="legend">
+              <span><i style="background:var(--ink-3)"></i>Baseline</span>
+              <span><i style="background:var(--gold)"></i>Optimized</span>
             </div>
           </div>
 
-          <!-- Dynamic Model Picker Dropdown -->
-          <div>
-            <label class="block text-[var(--text-secondary)] text-[11px] mb-1 font-sans font-semibold">Dynamic Model Picker</label>
-            <select id="scaf-llm-select" onchange="saveScaffoldingState()" class="w-full bg-[var(--bg-secondary)] border border-[var(--border-card)] rounded-xl px-3 py-2 text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-blue)] font-mono">
-              <option value="">Click Sync / Refresh Models to load live catalog...</option>
-            </select>
-          </div>
-
-          <!-- Inline Status Error/Success Container -->
-          <div id="scaf-nv-status" class="text-xs font-mono font-medium hidden"></div>
-        </div>
-
-        <!-- Specification Prompt Box -->
-        <div class="gemini-card p-6 space-y-4">
-          <label class="block text-[var(--text-secondary)] text-[11px] font-sans font-semibold">Autonomous Specification Prompt</label>
-          <textarea id="scaf-prompt" rows="3" placeholder="Describe your RISC-V project... e.g. 'Keyword spotting classifier targeting RV64GCV with INT8 quantization and fast softmax.'" class="w-full bg-[var(--bg-secondary)] border border-[var(--border-card)] rounded-2xl p-3.5 text-xs font-mono text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-blue)] resize-none">Keyword-spotting classifier for RV64GCV with 8-bit quantization, C harness, and QEMU verification.</textarea>
-          <div class="flex items-center justify-between">
-            <button onclick="generateScaffold()" class="bg-[var(--accent-blue)] text-white font-bold text-xs py-2 px-5 rounded-full shadow-sm flex items-center hover:opacity-90">
-              <i data-lucide="play" class="w-3.5 h-3.5 mr-1.5 fill-white"></i> Generate Starter Project
-            </button>
-            <span id="scaf-cost-estimate" class="text-xs font-mono text-[var(--text-secondary)]">AST Check Active</span>
+          <div class="card">
+            <h2>Detail</h2>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Configuration</th><th class="num">Mean latency</th><th class="num">Change</th><th class="num">Parity MSE</th><th style="width:96px">Verdict</th></tr></thead>
+                <tbody id="r-table"></tbody>
+              </table>
+            </div>
+            <div class="term mt" id="r-digest" style="height:auto;min-height:100px"></div>
           </div>
         </div>
       </section>
 
+      <!-- ==================================================== DIAGNOSTICS -->
+      <section class="view hidden" id="view-diag">
+        <div class="page-head">
+          <div class="eyebrow">Tools</div>
+          <h1>Diagnostics</h1>
+          <p>Toolchain health, and where every binary was found. This is the same check
+             <span class="mono">tatva doctor</span> performs.</p>
+        </div>
+
+        <div class="card">
+          <div class="row between">
+            <div><h2>Toolchain</h2><p class="sub" style="margin-bottom:0">RISC-V cross-compiler and QEMU system emulator.</p></div>
+            <button class="btn" id="btn-recheck">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-refresh"/></svg>
+              Re-check
+            </button>
+          </div>
+          <div class="table-wrap mt">
+            <table><thead><tr><th style="width:200px">Component</th><th style="width:110px">Required</th><th style="width:100px">Status</th><th>Resolved path</th></tr></thead>
+            <tbody id="diag-table"></tbody></table>
+          </div>
+
+          <div class="notice ok hidden mt" id="diag-ready">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg>
+            <span>Everything stages 04 and 05 need is present. A full compile-and-measure run will complete.</span>
+          </div>
+
+          <div class="notice warn hidden mt" id="diag-missing">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-alert"/></svg>
+            <span id="diag-missing-text">The RISC-V toolchain is not installed. Stages 01–03 still work; 04 and 05 need it.</span>
+          </div>
+        </div>
+
+        <!-- The toolchain is not bundled: it is roughly half a gigabyte and licensed
+             separately. This card fetches the same pinned builds `tatva setup` uses,
+             so someone who has the app and not a checkout is not stuck. -->
+        <div class="card mt" id="diag-install-card">
+          <div class="row between">
+            <div>
+              <h2>Install the RISC-V toolchain</h2>
+              <p class="sub" style="margin-bottom:0">Downloads pinned prebuilt binaries from the xPack project
+                and unpacks them into your user folder. Nothing else on the machine is touched.</p>
+            </div>
+            <button class="btn primary" id="btn-install-tc">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-download"/></svg>
+              Install toolchain
+            </button>
+          </div>
+
+          <div class="table-wrap mt">
+            <table><thead><tr><th style="width:260px">Will download</th><th style="width:90px">Size</th><th>From</th></tr></thead>
+            <tbody id="tc-plan"></tbody></table>
+          </div>
+          <div class="tiny muted mt" id="tc-dest"></div>
+
+          <div class="hidden mt" id="tc-progress">
+            <div class="row between tiny mono"><span id="tc-stage">…</span><span id="tc-pct"></span></div>
+            <div class="bar mt"><i id="tc-bar"></i></div>
+            <div class="term mt" id="tc-log" style="max-height:150px"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================================================== ASSISTANT -->
+      <section class="view hidden" id="view-assistant">
+        <div class="page-head">
+          <div class="eyebrow">Tools · Experimental</div>
+          <h1>Assistant</h1>
+          <p>Answers questions about TATVA and about compiler errors. It routes to whichever LLM
+             you have configured — a local Ollama server, or a provider key you supply. With none
+             configured it says so rather than guessing.</p>
+        </div>
+
+        <div class="card">
+          <div id="chat" style="max-height:380px;overflow-y:auto" class="stack"></div>
+          <div class="row mt" style="flex-wrap:nowrap">
+            <input class="input" id="chat-input" placeholder="Ask about a target, a pass, or an error message…" style="font-family:var(--sans)">
+            <button class="btn primary" id="btn-chat">Send</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================================================== SCAFFOLDING -->
+      <section class="view hidden" id="view-scaffold">
+        <div class="page-head">
+          <div class="eyebrow">Tools · Experimental</div>
+          <h1>Project scaffolding</h1>
+          <p>Generates a starter RISC-V project from a description. When no LLM is reachable it
+             falls back to a fixed template and says so — the output is then the same for everyone,
+             regardless of what you typed.</p>
+        </div>
+
+        <div class="card">
+          <div class="grid two">
+            <label class="field">
+              <span class="lbl">LLM provider</span>
+              <select class="select" id="scaf-provider">
+                <option>Local (Ollama)</option>
+                <option>NVIDIA NIM</option>
+                <option>OpenAI</option>
+                <option>Anthropic</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="lbl">Model</span>
+              <select class="select" id="scaf-model"><option value="">—</option></select>
+            </label>
+          </div>
+
+          <label class="field">
+            <span class="lbl">API key <span class="muted">(kept in this window only; never written to disk)</span></span>
+            <div class="row" style="flex-wrap:nowrap">
+              <input class="input" type="password" id="scaf-key" placeholder="nvapi-…" spellcheck="false">
+              <button class="btn" id="btn-scaf-sync">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" id="scaf-sync-ico"><use href="#i-refresh"/></svg>
+                Sync
+              </button>
+            </div>
+          </label>
+
+          <div class="notice info hidden" id="scaf-status"><span id="scaf-status-text"></span></div>
+
+          <label class="field mt">
+            <span class="lbl">What should the project do?</span>
+            <textarea class="input" id="scaf-prompt" rows="3">Keyword-spotting classifier for RV64GC with softmax fusion, a C harness, and QEMU verification.</textarea>
+          </label>
+
+          <div class="row end">
+            <button class="btn primary" id="btn-scaf-run">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-play"/></svg>
+              Generate starter project
+            </button>
+          </div>
+        </div>
+      </section>
 
     </div>
   </main>
+</div>
 
-  <!-- TAB SWITCHING & PYWEBVIEW API BRIDGING -->
-  <script>
-    lucide.createIcons();
-
-    let latencyChartInstance = null;
-
-    function toggleTheme() {
-      const htmlEl = document.documentElement;
-      if (htmlEl.classList.contains('dark')) {
-        htmlEl.classList.remove('dark');
-        htmlEl.classList.add('light');
-      } else {
-        htmlEl.classList.remove('light');
-        htmlEl.classList.add('dark');
-      }
-      lucide.createIcons();
-    }
-
-    function showValidationBanner(msg) {
-      const banner = document.getElementById('validation-banner');
-      const text = document.getElementById('validation-msg');
-      if (banner && text) {
-        text.innerText = msg;
-        banner.classList.remove('hidden');
-      }
-    }
-
-    function hideValidationBanner() {
-      const banner = document.getElementById('validation-banner');
-      if (banner) banner.classList.add('hidden');
-    }
-
-    function switchTab(tabId) {
-      hideValidationBanner();
-      const views = ['dashboard', 'model', 'target', 'opt', 'execution', 'results', 'diag', 'ai', 'experimental'];
-      views.forEach(v => {
-        const el = document.getElementById('view-' + v);
-        if (el) el.classList.add('hidden');
-        
-        const nav = document.getElementById('nav-' + v);
-        if (nav) {
-          nav.classList.remove('active');
-          nav.classList.add('text-[var(--text-secondary)]');
-        }
-      });
-
-      const activeEl = document.getElementById('view-' + tabId);
-      if (activeEl) activeEl.classList.remove('hidden');
-
-      const activeNav = document.getElementById('nav-' + tabId);
-      if (activeNav) {
-        activeNav.classList.add('active');
-        activeNav.classList.remove('text-[var(--text-secondary)]');
-      }
-
-      lucide.createIcons();
-    }
-
-    function selectTarget(targetName) {
-      document.querySelectorAll('.target-card').forEach(c => c.classList.remove('selected'));
-      const card = document.getElementById('target-card-' + targetName);
-      if (card) card.classList.add('selected');
-      
-      const lbl = document.getElementById('lbl-selected-target');
-      if (lbl) lbl.innerText = targetName;
-      const kpiTgt = document.getElementById('kpi-target');
-      if (kpiTgt) kpiTgt.innerText = targetName;
-    }
-
-    function togglePass(passName) {
-      const card = document.getElementById('pass-card-' + passName);
-      const chk = document.getElementById('chk-pass-' + passName);
-      if (chk) chk.checked = !chk.checked;
-      if (card) {
-        if (chk.checked) card.classList.add('active');
-        else card.classList.remove('active');
-      }
-    }
-
-    async function browseModelFile() {
-      if (window.pywebview && window.pywebview.api && window.pywebview.api.select_model_file) {
-        try {
-          const res = await window.pywebview.api.select_model_file();
-          if (res && res.path) {
-            document.getElementById('input-model-path').value = res.path;
-            validateAndDisplayModel(res.path);
-          }
-        } catch (e) {
-          console.error("select_model_file error:", e);
-        }
-      }
-    }
-
-    async function validateAndDisplayModel(path) {
-      if (!path) return;
-      if (window.pywebview && window.pywebview.api && window.pywebview.api.validate_model_file) {
-        try {
-          const info = await window.pywebview.api.validate_model_file(path);
-          const emptyDiv = document.getElementById('summary-empty-state');
-          const detailsDiv = document.getElementById('summary-details-card');
-
-          if (info.valid) {
-            if (emptyDiv) emptyDiv.classList.add('hidden');
-            if (detailsDiv) detailsDiv.classList.remove('hidden');
-
-            document.getElementById('sum-filename').innerText = info.filename;
-            document.getElementById('sum-format').innerText = `${info.framework} • ${info.size_mb} MB`;
-            document.getElementById('sum-status').innerText = `Status: ${info.status}`;
-            document.getElementById('val-total-ops').innerText = info.layer_count;
-            document.getElementById('val-sha256').innerText = info.sha256;
-            document.getElementById('val-bottleneck').innerText = info.has_bottleneck ? 'DETECTED' : 'CLEAN';
-            hideValidationBanner();
-          } else {
-            showValidationBanner(info.error);
-          }
-        } catch (e) {
-          showValidationBanner(`File validation error: ${e}`);
-        }
-      }
-    }
-
-    async function runModelAnalysis() {
-      const path = document.getElementById('input-model-path').value.trim();
-      if (!path) {
-        showValidationBanner("Please select a valid target architecture and model file before executing.");
-        return;
-      }
-      validateAndDisplayModel(path);
-    }
-
-    async function verifyToolchainConfiguration() {
-      const tgt = document.getElementById('lbl-selected-target').innerText;
-      if (window.pywebview && window.pywebview.api && window.pywebview.api.verify_toolchain_configuration) {
-        try {
-          const res = await window.pywebview.api.verify_toolchain_configuration(tgt);
-          if (res.status === 'ok') {
-            alert(`✅ Step 2: Toolchain Configuration Verified for '${tgt}'\n\nGCC march/mabi flags are valid.\nQEMU simulator is ready.\n\nNote: Simulation-only check.\nPhysical board connection is separate (Step 8).`);
-          } else {
-            alert(`❌ Toolchain config issue for '${tgt}':\n${res.error}`);
-          }
-        } catch (e) {
-          alert(`[ERROR] Toolchain check failed: ${e}`);
-        }
-      }
-    }
-
-    async function scanPhysicalHardwareBoard() {
-      const banner = document.getElementById('hw-status-banner');
-      if (banner) {
-        banner.innerHTML = '<span class="text-amber-500 font-mono text-xs font-bold">[STEP 8] Scanning USB/JTAG interfaces for RISC-V hardware boards…</span>';
-      }
-      if (window.pywebview && window.pywebview.api && window.pywebview.api.scan_hardware_boards) {
-        try {
-          const res = await window.pywebview.api.scan_hardware_boards();
-          if (banner) {
-            banner.innerHTML = `<span class="text-[var(--accent-blue)] font-mono text-xs font-bold">[STEP 8] ${res.status}</span>`;
-          }
-          alert(`Physical Hardware Scan Result:\n\n${res.status}`);
-        } catch (e) {
-          if (banner) {
-            banner.innerHTML = `<span class="text-[var(--accent-blue)] font-mono text-xs font-bold">[STEP 8] SIMULATION MODE — QEMU results only</span>`;
-          }
-        }
-      } else {
-        setTimeout(() => {
-          if (banner) {
-            banner.innerHTML = `<span class="text-[var(--accent-blue)] font-mono text-xs font-bold">[STEP 8] SIMULATION MODE — No physical USB/JTAG board detected</span>`;
-          }
-          alert('No RISC-V hardware board detected on USB/JTAG interfaces.\n\nTATVA is running in QEMU simulation mode.');
-        }, 800);
-      }
-    }
-
-    async function startCompilationPipeline() {
-      const path = document.getElementById('input-model-path').value.trim();
-      const targetName = document.getElementById('lbl-selected-target').innerText;
-      const fuseSoftmax = document.getElementById('chk-pass-fuse')?.checked ?? true;
-      const quantize = document.getElementById('chk-pass-quant')?.checked ?? false;
-
-      if (!path) {
-        showValidationBanner("Please select a valid target architecture and model file before executing.");
-        switchTab('model');
-        return;
-      }
-
-      hideValidationBanner();
-      const stream = document.getElementById('terminal-stream');
-
-      if (window.pywebview && window.pywebview.api && window.pywebview.api.run_pipeline) {
-        try {
-          const res = await window.pywebview.api.run_pipeline(path, targetName, fuseSoftmax, quantize);
-          if (res && res.success === false) {
-            const errText = res.error || "Compilation failed.";
-            showValidationBanner(errText);
-            if (stream) stream.innerHTML += `<p class="text-red-400">[ERROR] ${errText}</p>`;
-            return;
-          }
-
-          const baseMs = (res && typeof res.baseline_ms === 'number') ? res.baseline_ms : ((res && typeof res.base_ms === 'number') ? res.base_ms : 48.2);
-          const optMs = (res && typeof res.optimized_ms === 'number') ? res.optimized_ms : ((res && typeof res.opt_ms === 'number') ? res.opt_ms : 20.3);
-          const speedupPct = (res && typeof res.speedup_pct === 'number') ? res.speedup_pct : ((res && typeof res.speedup === 'number') ? res.speedup : 57.8);
-          const mseVal = (res && typeof res.mse === 'number') ? res.mse : 0.0004;
-          const configDigest = (res && res.config_digest) || `=== TATVA RISC-V OPTIMIZATION PIPELINE EXECUTION ===\nTarget Architecture : ${targetName}\nModel File Path     : ${path}`;
-
-          if (stream) {
-            stream.innerHTML = `<pre class="text-blue-400 font-bold mb-2">${configDigest}</pre>` +
-              `<p class="text-gray-400">[BASELINE] Latency: ${baseMs.toFixed(2)} ms</p>` +
-              `<p class="text-emerald-400 font-bold">[RESULTS] Optimized: ${optMs.toFixed(2)} ms | Speedup: ${speedupPct.toFixed(2)}% | MSE: ${mseVal.toFixed(6)}</p>`;
-          }
-
-          // Update KPIs
-          document.getElementById('kpi-speedup').innerText = `+${speedupPct.toFixed(1)}%`;
-          document.getElementById('kpi-passes').innerText = '2 Passes';
-
-          // Show Results Panel
-          document.getElementById('results-empty-notice').classList.add('hidden');
-          document.getElementById('results-charts-panel').classList.remove('hidden');
-
-          const tbody = document.getElementById('results-table-body');
-          if (tbody) {
-            tbody.innerHTML = `
-              <tr>
-                <td class="py-2.5 px-3 font-bold">Baseline (FP32)</td>
-                <td class="py-2.5 px-3">${baseMs.toFixed(2)} ms</td>
-                <td class="py-2.5 px-3">Reference</td>
-                <td class="py-2.5 px-3">0.000000</td>
-                <td class="py-2.5 px-3"><span class="bg-gray-500/20 text-gray-300 text-[10px] px-2 py-0.5 rounded">Baseline</span></td>
-              </tr>
-              <tr class="bg-emerald-500/10">
-                <td class="py-2.5 px-3 font-bold text-[var(--accent-green)]">Optimized Pipeline</td>
-                <td class="py-2.5 px-3 font-bold text-[var(--accent-green)]">${optMs.toFixed(2)} ms</td>
-                <td class="py-2.5 px-3 text-[var(--accent-green)]">+${speedupPct.toFixed(2)}%</td>
-                <td class="py-2.5 px-3">${mseVal.toFixed(6)}</td>
-                <td class="py-2.5 px-3"><span class="bg-emerald-500/20 text-[var(--accent-green)] text-[10px] px-2 py-0.5 rounded font-bold">PASS</span></td>
-              </tr>
-            `;
-          }
-        } catch (e) {
-          if (stream) stream.innerHTML += `<p class="text-red-400">[ERROR] ${e.message || e}</p>`;
-        }
-      } else {
-        if (stream) {
-          stream.innerHTML = `<pre class="text-blue-400 font-bold mb-2">=== TATVA RISC-V OPTIMIZATION PIPELINE EXECUTION (SIMULATION MODE) ===\nTarget Architecture : ${targetName}\nModel File Path     : ${path}\nSoftmax Fusion Pass : ${fuseSoftmax ? 'ENABLED' : 'DISABLED'}\nINT8 Quant Pass     : ${quantize ? 'ENABLED' : 'DISABLED'}</pre>` +
-            `<p class="text-gray-400">[BASELINE] Latency: 48.20 ms</p>` +
-            `<p class="text-emerald-400 font-bold">[RESULTS] Optimized: 20.30 ms | Speedup: 57.88% | MSE: 0.000400</p>`;
-        }
-        document.getElementById('kpi-speedup').innerText = '+57.9%';
-        document.getElementById('kpi-passes').innerText = '2 Passes';
-        document.getElementById('results-empty-notice').classList.add('hidden');
-        document.getElementById('results-charts-panel').classList.remove('hidden');
-        const tbody = document.getElementById('results-table-body');
-        if (tbody) {
-          tbody.innerHTML = `
-            <tr>
-              <td class="py-2.5 px-3 font-bold">Baseline (FP32)</td>
-              <td class="py-2.5 px-3">48.20 ms</td>
-              <td class="py-2.5 px-3">Reference</td>
-              <td class="py-2.5 px-3">0.000000</td>
-              <td class="py-2.5 px-3"><span class="bg-gray-500/20 text-gray-300 text-[10px] px-2 py-0.5 rounded">Baseline</span></td>
-            </tr>
-            <tr class="bg-emerald-500/10">
-              <td class="py-2.5 px-3 font-bold text-[var(--accent-green)]">Optimized Pipeline</td>
-              <td class="py-2.5 px-3 font-bold text-[var(--accent-green)]">20.30 ms</td>
-              <td class="py-2.5 px-3 text-[var(--accent-green)]">+57.88%</td>
-              <td class="py-2.5 px-3">0.000400</td>
-              <td class="py-2.5 px-3"><span class="bg-emerald-500/20 text-[var(--accent-green)] text-[10px] px-2 py-0.5 rounded font-bold">PASS</span></td>
-            </tr>
-          `;
-        }
-      }
-    }
-
-    function escapeHtml(s) {
-      const d = document.createElement('div');
-      d.textContent = s;
-      return d.innerHTML;
-    }
-
-    function appendChat(who, body, colorVar) {
-      const stream = document.getElementById('chat-stream');
-      if (!stream) return null;
-      const el = document.createElement('div');
-      el.className = 'p-3 rounded-xl bg-[var(--bg-card)] border border-[var(--border-card)] text-[var(--text-primary)] font-sans whitespace-pre-wrap';
-      el.innerHTML = `<span class="font-bold" style="color:var(${colorVar})">${escapeHtml(who)}:</span> ${escapeHtml(body)}`;
-      stream.appendChild(el);
-      stream.scrollTop = stream.scrollHeight;
-      return el;
-    }
-
-    // Routes to whichever LLM the user configured, via the Python bridge. This used
-    // to print one hardcoded sentence about "Gemini" regardless of the question --
-    // there is no Gemini integration in TATVA.
-    async function sendAiPrompt() {
-      const input = document.getElementById('ai-chat-input');
-      if (!input || !input.value.trim()) return;
-
-      const txt = input.value.trim();
-      input.value = '';
-      appendChat('You', txt, '--accent-blue');
-
-      if (!(window.pywebview && window.pywebview.api && window.pywebview.api.ask_assistant)) {
-        appendChat('Assistant unavailable', 'The Python bridge is not connected. Run this window with `tatva gui` rather than opening index.html directly in a browser.', '--accent-orange');
-        return;
-      }
-
-      const pending = appendChat('Assistant', 'Thinking...', '--accent-green');
-      try {
-        const res = await window.pywebview.api.ask_assistant(txt, '', '');
-        if (pending) pending.remove();
-        if (res && res.success) {
-          appendChat(`Assistant (${res.model || 'local'})`, res.reply, '--accent-green');
-        } else {
-          appendChat('Assistant unavailable', (res && res.error) || 'Unknown error.', '--accent-orange');
-        }
-      } catch (e) {
-        if (pending) pending.remove();
-        appendChat('Assistant unavailable', String(e), '--accent-orange');
-      }
-    }
-
-    // Load build info on PyWebView ready
-    window.addEventListener('pywebviewready', async () => {
-      if (window.pywebview && window.pywebview.api && window.pywebview.api.get_build_info) {
-        try {
-          const info = await window.pywebview.api.get_build_info();
-          const badge = document.getElementById('build-badge');
-          const footer = document.getElementById('build-footer');
-          const term = document.getElementById('terminal-version');
-          if (badge) badge.innerText = info.version;
-          if (footer) footer.innerText = info.label;
-          if (term) term.innerText = info.version;
-          document.title = 'TATVA RISC-V Optimization Studio ' + info.version;
-        } catch (e) {}
-      }
-    });
-
-    // Drag and Drop Handler
-    document.addEventListener('DOMContentLoaded', () => {
-      const dropZone = document.getElementById('drop-target-area');
-      if (dropZone) {
-        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-          dropZone.addEventListener(eventName, (e) => { e.preventDefault(); e.stopPropagation(); }, false);
-        });
-
-        dropZone.addEventListener('drop', (e) => {
-          const dt = e.dataTransfer;
-          const files = dt.files;
-          if (files && files.length > 0) {
-            const path = files[0].path || files[0].name;
-            document.getElementById('input-model-path').value = path;
-            validateAndDisplayModel(path);
-          }
-        });
-      }
-    });
-  </script>
-  <script src="studio.js"></script>
+<script src="studio.js"></script>
 </body>
 </html>

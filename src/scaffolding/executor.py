@@ -28,57 +28,42 @@ class ExecutionResult:
 
 class ToolchainManager:
     """
-    Dynamic discoverer for RISC-V cross-compilation toolchains and QEMU emulators.
+    Reporter for the RISC-V cross-compiler and QEMU emulator the build will use.
+
+    Discovery itself lives in tatva.runner. This class only forwards to it, and that is
+    the point: the Diagnostics page and the stage 05 build must never disagree about
+    whether a toolchain is present. When they had separate search logic, Diagnostics
+    could report a compiler the build then refused, and stage 05 failed with a raw
+    "RISC-V GCC cross-compiler binary not found." after the preflight banner had
+    already declared everything ready.
     """
 
     @staticmethod
     def discover_gcc() -> tuple[str | None, str | None]:
         """
-        Find a RISC-V cross-compiler.
+        Report the cross-compiler stage 05 would invoke.
 
-        The bundled toolchain is checked FIRST so a host x86 'gcc' on PATH can never be
-        selected -- it would be invoked with -march=rv64gc* and fail in a confusing way.
-        Host gcc is never a valid fallback for a RISC-V cross-compile.
+        Note this no longer accepts riscv64-linux-gnu-gcc. That compiler targets Linux
+        userspace; compile_model links bare metal (-ffreestanding -nostdlib -T link.ld)
+        against its own start.S, so finding it counted as a pass here while the build
+        still had nothing to run.
         """
-        from tatva.runner import _first_existing_exe, _search_bin_dirs
+        from tatva.runner import find_riscv_gcc
 
-        bundled = _first_existing_exe(
-            _search_bin_dirs("riscv-none-elf-gcc", "riscv-toolchain"), ["riscv-none-elf-gcc"]
-        )
-        if bundled:
-            return "riscv-none-elf-gcc", bundled
-
-        candidates = [
-            "riscv64-unknown-elf-gcc",
-            "riscv-none-elf-gcc",
-            "riscv64-linux-gnu-gcc",
-        ]
-        for name in candidates:
-            path = shutil.which(name) or shutil.which(name + ".exe")
-            if path:
-                return name, path
-
-        return None, None
+        return find_riscv_gcc()
 
     @staticmethod
     def discover_qemu(bitness: int = 64) -> tuple[str | None, str | None]:
-        """Find qemu-system-riscv64 or qemu-riscv64 binary."""
-        candidates = [f"qemu-system-riscv{bitness}", f"qemu-riscv{bitness}"]
-        for name in candidates:
-            path = shutil.which(name)
-            if path:
-                return name, path
-            path_exe = shutil.which(name + ".exe")
-            if path_exe:
-                return name, path_exe
+        """
+        Report the emulator stage 05 would invoke: qemu-system-riscv{bitness}.
 
-        from tatva.runner import _first_existing_exe, _search_bin_dirs
+        The user-mode qemu-riscv{bitness} used to satisfy this check. It cannot run the
+        measurement -- that boots the ELF on -machine virt and reads the cycle CSR --
+        so accepting it turned a missing dependency into a green badge.
+        """
+        from tatva.runner import find_qemu
 
-        bundled = _first_existing_exe(_search_bin_dirs("qemu-riscv", "qemu"), candidates)
-        if bundled:
-            return f"qemu-system-riscv{bitness}", bundled
-
-        return None, None
+        return find_qemu(bitness)
 
     @classmethod
     def get_health_status(cls) -> dict[str, Any]:

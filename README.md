@@ -28,6 +28,34 @@ so it rendered as a permanently broken image at the top of the README. -->
 
 ---
 
+## Running It
+
+> **New here?** [GETTING_STARTED.md](GETTING_STARTED.md) walks you from an unzipped
+> folder to a measured result, and lists the failures worth recognising. This section is
+> the short version.
+
+**The app is `TATVA.exe`.** Unzip `TATVA-beta-2.0-windows.zip` anywhere and double-click
+it — no Python, no install, no account.
+
+Stages 01–04 (input, analyze, map, optimize) work the moment it opens. Stage 05
+(generate) is the only one that shells out to the RISC-V cross-compiler and QEMU, and as
+of Beta 2.0 the app can fetch them itself: **Diagnostics → Install the RISC-V
+toolchain**. That downloads pinned xPack
+builds (~520 MB) into `%LOCALAPPDATA%\tatva\toolchains`, needs no admin rights and adds
+nothing to `PATH`. The card lists every URL and the destination before you press it.
+
+Four sample models ship inside the zip. Stage 01 shows them as cards — pick **Tiny
+transformer block** for a run with an attention pattern in it, which is the one the
+softmax fusion pass can actually change.
+
+To produce that zip from this repository, see
+[Sharing TATVA With Someone Else](#sharing-tatva-with-someone-else).
+
+The `tatva` CLI below is the same compiler with a terminal in front of it, for
+scripting and CI. It is an alternative to the app, not a prerequisite for it.
+
+---
+
 ## Key Features
 
 - **Bare-Metal RISC-V Code Generation:** Compiles ONNX Transformer models to standalone C99 static functions linked with TVM Minimal C Runtime.
@@ -36,7 +64,7 @@ so it rendered as a permanently broken image at the top of the README. -->
 - **Deterministic Emulation:** Execution timing using RISC-V hardware cycle counters (`rdcycle`) under system-mode QEMU (`-icount shift=0`).
 - **Interactive Security-First Diagnostics:** Plain-English failure explanations and resolution guides via Anthropic Claude API (with strict metadata whitelist egress) or local rule-based fallback engines.
 - **Session-Level Content-Hash Cache:** Fast repeated developer compilation runs reusing content-hashed model IRs and build artifacts.
-- **Desktop Engineering GUI:** Multi-panel desktop UI (`tatva gui`) with splash screen lazy module loading and non-blocking background workers.
+- **Desktop Optimization Studio:** The primary interface, shipped as `TATVA.exe`. Walks the five stages — 01 input, 02 analyze, 03 map, 04 optimize, 05 generate — with a branded splash while the compiler backend loads, and a measured baseline-vs-optimized chart at the end. Its Diagnostics page installs the RISC-V toolchain in place, so a recipient of the zip never needs a terminal. Runs entirely offline apart from that one explicit download: no CDN, no fonts, no telemetry. Also reachable as `tatva gui` from a source checkout.
 
 ---
 
@@ -140,10 +168,19 @@ Empirical benchmark results under bare-metal RISC-V `RV64GC` system emulation (`
 
 | Model | Model Size | Ops | Baseline Cycles | Optimized Cycles | Latency Gain | Parity (MSE) | Environment |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **model.onnx** (Synthetic FP32) | 439.1 KB | 9 | 16,122,694 | **15,383,021** | **+4.6%** | 0.000000 | QEMU Simulated |
-| **model_quant.onnx** (Dynamic INT8) | 262.2 KB | 14 | 19,856,579 | **18,989,000** | **+4.4%** | 0.000000 | QEMU Simulated |
-| **model_pretrained.onnx** (BERT-tiny) | 17.4 MB | 156 | 118,806,393 | **118,540,094** | **+0.2%** | 0.000000 | QEMU Simulated |
-| **model_unsupported.onnx** | 439.1 KB | N/A | N/A | N/A | N/A | N/A | EXPECTED FAIL |
+| **model.onnx** (Synthetic FP32) | 17.3 KB | 9 | 16,122,694 | **15,383,021** | **+4.6%** | 0.000000 | QEMU Simulated |
+| **model_quant.onnx** (Dynamic INT8) | 6.0 KB | 14 | 19,856,579 | **18,989,000** | **+4.4%** | 0.000000 | QEMU Simulated |
+| **model_pretrained.onnx** (BERT-tiny) | 16.8 MB | 156 | 118,806,393 | **118,540,094** | **+0.2%** | 0.000000 | QEMU Simulated |
+| **model_unsupported.onnx** | 17.3 KB | N/A | N/A | N/A | N/A | N/A | EXPECTED FAIL |
+
+<!-- Model Size is measured from models/*.onnx on disk. The column previously read
+     439.1 KB / 262.2 KB / 17.4 MB / 439.1 KB, which matched no file in the repository;
+     439.1 KB in particular appeared twice for two files that are both 17.3 KB. Cycle
+     counts are unchanged -- those are the measured figures. -->
+
+Ops counts are ONNX graph nodes. The GUI's stage 02 reports Relax calls after import,
+which is a larger number for the same model (model.onnx: 9 ONNX nodes → 17 Relax calls
+across 11 operator kinds) — both are counting honestly, just at different layers.
 
 > [!NOTE]
 > **Scalar Quantization Note:** On scalar RISC-V cores (`rv64gc` without vector extensions), INT8 quantization reduces file storage footprint by 40%–72%, but introduces a +19% to +22% cycle count latency overhead due to loop-by-loop software emulation of dequantization scaling and zero-point casts.
@@ -152,15 +189,59 @@ Empirical benchmark results under bare-metal RISC-V `RV64GC` system emulation (`
 
 ## Sharing TATVA With Someone Else
 
-Three ways, in increasing order of how little the other person has to know.
+### 1. Send them the ZIP — this is the way TATVA ships
 
-### 1. Send them the repository (best for collaborators)
+The person on the other end needs no Python, no `pip`, no repository and no reading.
+They unzip a folder and double-click `TATVA.exe`.
 
 ```bash
-git push -u origin master
+python build_exe.py
 ```
 
-They then need three commands:
+That runs PyInstaller against [tatva.spec](tatva.spec) and produces:
+
+| Output | What it is |
+| :--- | :--- |
+| `dist/TATVA/TATVA.exe` | the app — double-click to launch |
+| `dist/TATVA-<version>-windows.zip` | the same folder, zipped; this is what you send |
+
+`build_exe.py --no-zip` builds without zipping; `build_exe.py --zip-only` re-zips a
+folder you already built. A `README.txt` is written next to the exe for whoever receives
+it, since they will not have this file.
+
+Notes that matter:
+
+- **It is a folder, not a single file, on purpose.** A one-file build unpacks Apache
+  TVM's native libraries — most of a gigabyte — into a temp directory on every launch.
+  The folder build starts in seconds and zips just as well.
+- **PyInstaller does not cross-compile.** Build on the OS you are shipping to. The zip
+  above is Windows-only; run the same command on Linux or macOS for those.
+- **Windows SmartScreen will warn** that the publisher is unknown, because the build is
+  not code-signed. "More info" → "Run anyway". Signing it needs a code-signing
+  certificate, which is a purchase, not a build flag.
+- **The RISC-V toolchain is not inside the zip** — it is ~520 MB and platform-specific,
+  which would quadruple the download for the people who already have it. Stages 01–04
+  (input, analyze, map, optimize) work on a bare machine. For stage 05 the recipient presses
+  **Diagnostics → Install the RISC-V toolchain** inside the app; `riscv-none-elf-gcc` and
+  `qemu-system-riscv64` already on `PATH` are picked up instead, and the Diagnostics page
+  shows the resolved path for each.
+
+### 2. Send them a wheel (for someone who already has Python)
+
+```bash
+uv build
+```
+
+That writes `dist/tatva_compiler-<version>-py3-none-any.whl` (~1.3 MB). Anyone with
+Python 3.12 or 3.13 installs it with `pip install tatva_compiler-<version>-py3-none-any.whl`
+and gets the `tatva` CLI as well as the GUI — which the zip does not include, since the
+exe launches straight into the desktop app.
+
+To publish it so `pip install tatva-compiler` works for everyone, upload to PyPI with
+`uv publish` (or `twine upload dist/*`). The package name `tatva-compiler` is not yet
+claimed on PyPI — check before you rely on it.
+
+### 3. Send them the repository (for collaborators)
 
 ```bash
 git clone <repo-url> && cd tatva
@@ -170,37 +251,6 @@ tatva setup && tatva doctor
 
 `tatva doctor` is the gate — if it prints five `[OK]` lines, everything else in this
 README works. If it doesn't, it names the missing piece and where it looked.
-
-### 2. Send them a wheel (best for someone who just wants to use it)
-
-```bash
-uv build
-```
-
-That writes `dist/tatva_compiler-<version>-py3-none-any.whl` (~1.3 MB). Anyone with
-Python 3.12 or 3.13 installs it with `pip install tatva_compiler-<version>-py3-none-any.whl`
-and gets the `tatva` command, the GUI, and the bundled web UI. They still need
-`tatva setup` for the RISC-V toolchain itself, which is too large to ship in a wheel.
-
-To publish it so `pip install tatva-compiler` works for everyone, upload to PyPI with
-`uv publish` (or `twine upload dist/*`). The package name `tatva-compiler` is not yet
-claimed on PyPI — check before you rely on it.
-
-### 3. Send them an executable (for someone without Python — expect some work)
-
-```bash
-pip install pyinstaller
-pyinstaller tatva.spec
-```
-
-Produces a self-contained `dist/Tatva` binary. Build it on the platform you are shipping
-to; PyInstaller does not cross-compile.
-
-Honest caveat: this route is the least tested of the three. Apache TVM loads its native
-libraries through `ctypes`, so no `import` statement points at them and PyInstaller
-cannot find them by tracing imports. `tatva.spec` calls `collect_dynamic_libs('tvm')` to
-pull them in, but if a compile fails inside the frozen app with a missing-library error,
-that is where to look. The wheel is the supported path.
 
 ### What not to send
 
@@ -225,6 +275,7 @@ that is where to look. The wheel is the supported path.
 - [BASELINE.md](BASELINE.md): Baseline performance tracking.
 - [OPTIMIZATION.md](OPTIMIZATION.md): Schraudolph Softmax mathematical derivations and empirical quantization findings.
 - [DIAGNOSTICS.md](DIAGNOSTICS.md): Exception taxonomy and Claude API prompt design.
+- [GETTING_STARTED.md](GETTING_STARTED.md): First run, from an unzipped folder to a measured result — app, CLI and source checkout.
 - [CONTRIBUTING.md](CONTRIBUTING.md): Guidelines for developer environment setup, testing, and PR expectations.
 - [CHANGELOG.md](CHANGELOG.md): Milestone release history.
 
