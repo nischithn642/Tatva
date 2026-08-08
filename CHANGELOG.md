@@ -15,6 +15,25 @@ PEP 440 applies — wheel names, `pip`, hatchling — and **Beta 2.0** everywher
 reads it: the badge, the zip filename, this file.
 
 ### Added
+- **The RISC-V toolchain now ships inside the zip, so all five stages work offline.**
+  Stage 05 is the only stage that produces a measurement and it was the only one that did
+  not work on a freshly unzipped folder — it shells out to a cross-compiler and an
+  emulator the recipient had to go and fetch first. `build_exe.py` now copies both into
+  `toolchain/` beside `TATVA.exe`, and `runner.bundled_tools_dir()` resolves that path
+  from `sys.executable` so the folder works wherever it is unzipped. No download, no
+  admin rights, nothing added to `PATH`, nothing written outside the folder. A
+  `riscv-none-elf-gcc` or `qemu-system-riscv64` already on the user's `PATH` still wins,
+  and a per-user `tatva setup` install still overrides the bundled copy, so nobody has to
+  delete files out of the app folder to use their own build.
+- **The bundle is pruned by asking the compiler, not by guessing.** The xPack toolchain
+  carries 32 multilib variants; the six targets in `compiler.TARGETS` resolve to four of
+  them, and the build reads that from `gcc -print-multi-directory` — the same lookup GCC
+  performs when it links — rather than from a hardcoded list that could drift. Dropping
+  the unused variants, the C++/Fortran compilers, gdb and its embedded CPython, and
+  QEMU's firmware for machine types TATVA never boots (the edk2 UEFI images alone are
+  ~290 MB) takes 2.1 GB down to 436 MB. `build_exe.py` then compiles all six targets out
+  of the pruned copy and runs the bundled QEMU before zipping, so a prune that removed
+  something needed fails the build rather than the recipient's first run.
 - **Install the RISC-V toolchain from inside the app.** Diagnostics → *Install toolchain*
   downloads the same pinned xPack builds `tatva setup` uses, unpacks them into the
   per-user tools directory, and re-probes — with a real progress bar, byte counts and a
@@ -26,6 +45,17 @@ reads it: the badge, the zip filename, this file.
 - **Stage 05 preflight.** The build now checks for GCC and QEMU *before* starting, and
   says what is missing and where to get it, with a button that goes there. Previously the
   run failed several seconds in with the name of a binary the user had never heard of.
+- **Natural-language configuration** (`tatva.nl_config`) — stage 04 now has a box that
+  turns a stated priority into a build configuration: *"this has to fit in SRAM on a
+  32-bit MCU"* selects RV32IMC and switches INT8 quantization on. It was listed under
+  Experimental in the beta scope and existed nowhere in the build; grepping for it
+  returned the deck and nothing else. It is a phrase matcher, not a language model, and
+  the implementation is deliberately narrow: it runs offline, it is deterministic, it can
+  only move the same switches the cards below it move, and it prints the phrase behind
+  every decision so the user can overrule it before anything is built. It also says when
+  it understood nothing, rather than returning defaults that look like an answer.
+  Conflicting priorities — *"smallest and fastest"* — are reported as a conflict, because
+  on a scalar RISC-V core those two ask for opposite passes.
 - `toolchain.install_component(..., on_progress=)` — an optional `(read, total)` callback,
   so the GUI can show download progress instead of a spinner that sits still for 430 MB.
 - `validate_model_file()` now returns `size_bytes` alongside `size_mb`.
@@ -85,17 +115,48 @@ reads it: the badge, the zip filename, this file.
   instructions and raises the toolchain banner, so that message can never be the last
   word again regardless of how the preflight was bypassed.
 
+- **Plain-English diagnostics reached the desktop app.** The beta scope calls this the key
+  differentiator — *"plain-English cause and recommendation, not a raw compiler error"* —
+  and the rule engine in `diagnostics.py` has always backed it for `tatva diagnose` and
+  the legacy Tk front end. The web GUI, which is the app people actually launch, returned
+  `str(exception)`: a failed run showed `Pipeline failed: Memory limit exceeded: 720896
+  bytes` and stopped there. Stages 02, 03 and 05 now route every failure through
+  `classify_failure` → `explain`, and stage 05 also diagnoses a run that completes but
+  misses the parity tolerance, which is a result the user has to act on and which
+  `FAIL [accuracy outside tolerance]` did not explain. Diagnosis is additive: the raw
+  message is still printed above it, because that is what gets pasted into a search.
+
 ### Changed
+- **The beta-scope card claimed two things this build does not do.** It listed *Renode
+  validation* under Experimental — Renode appears in the README, this file and
+  `.gitignore`, and in no code path — and *Natural-language config*, which did not exist.
+  Natural-language config is now implemented (above) and stays Experimental. Renode moved
+  to Roadmap. QEMU system-mode validation moved the other way, from Experimental to
+  Available: it is the measurement path every number in the app comes from, so calling it
+  experimental understated it. The card's subtitle now reads "The status of this build,
+  not a plan", matching the beta scope's own "nothing below is aspirational".
+- Stage 01 said PyTorch and TF/Keras files "are exported through ONNX first", which reads
+  as though TATVA performs the export. It does not — `compiler.py` raises
+  `ImportInProgressError` for both. The line now says to export to ONNX yourself first.
+- Diagnostics offered "Install the RISC-V toolchain" on a build that already ships one,
+  inviting a ~520 MB download for something sitting next to the exe. The card now appears
+  only when the health check actually finds something missing, which is the case it was
+  written for: a source checkout or a pip install that never ran `tatva setup`.
 - Stage 03 said "Stage 05 can compile this model" whenever every operator had a lowering.
   Mapping proves operator coverage, not that a compiler exists, so it now reads "Nothing
   in this graph will block stage 05" and leaves the toolchain question to stage 05's
   preflight.
 - The zip is `TATVA-beta-2.0-windows.zip`. `TATVA-2.0.0b1-windows.zip` makes the person
   receiving it decode a PEP 440 pre-release tag to find out what they have.
-- `README.txt` in the zip now lists all five stages by name, points at the in-app
-  installer, and states plainly that a 0.00% result is a real measurement — softmax
-  fusion needs an attention pattern, which `model_mlp.onnx` does not have and
+- `README.txt` in the zip now lists all five stages by name, says the toolchain is
+  already in the folder, and states plainly that a 0.00% result is a real measurement —
+  softmax fusion needs an attention pattern, which `model_mlp.onnx` does not have and
   `model.onnx` does.
+- Diagnostics said a missing toolchain leaves "stages 01–03 working; 04 and 05 need it".
+  Only stage 05 shells out, so 04 was sending people after an install they did not need.
+  Both that line and stage 05's own guidance now name the `toolchain/` folder first,
+  since on a packaged build a missing toolchain almost always means `TATVA.exe` was
+  dragged out of its folder rather than that anything needs downloading.
 - README's multi-model table listed model sizes that matched no file in the repository —
   `439.1 KB` appeared twice for two files that are both 17.3 KB. Sizes are now measured
   from `models/*.onnx`. Cycle counts are unchanged; those were the measured figures.
@@ -110,6 +171,15 @@ Measured under QEMU system mode, `-icount shift=0`, at a nominal 100 MHz. Not si
 The same packaged build on `model_mlp.onnx`: baseline **0.060 ms**, optimized
 **0.060 ms**, **0.00%**, parity MSE **4.05e-13**, status PASS, 4.5 s. Fusion has no
 attention pattern to rewrite in that graph, so no change is the correct result.
+
+**The offline claim was tested by taking the toolchain away.** `TATVA.exe` was launched
+with `TATVA_TOOLS_DIR` pointed at an empty directory and `PATH` cut to
+`C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem` — no cross-compiler and no
+emulator reachable by any route except the `toolchain/` folder in the zip. The sidebar
+still read **Toolchain ready**, stage 05 showed no preflight warning, and a full run
+completed: baseline **0.731 ms**, optimized **0.665 ms**, **−8.99%**, parity MSE
+**2.94e-5**, PASS, 5.3 s. Same figures as the run above on a machine with everything
+installed, which is the point.
 
 The resolver fix was checked against the machine that provoked it: with a
 `riscv64-linux-gnu-gcc` and a `qemu-riscv64` on PATH and no real toolchain installed,

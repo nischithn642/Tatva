@@ -37,12 +37,15 @@ so it rendered as a permanently broken image at the top of the README. -->
 **The app is `TATVA.exe`.** Unzip `TATVA-beta-2.0-windows.zip` anywhere and double-click
 it — no Python, no install, no account.
 
-Stages 01–04 (input, analyze, map, optimize) work the moment it opens. Stage 05
-(generate) is the only one that shells out to the RISC-V cross-compiler and QEMU, and as
-of Beta 2.0 the app can fetch them itself: **Diagnostics → Install the RISC-V
-toolchain**. That downloads pinned xPack
-builds (~520 MB) into `%LOCALAPPDATA%\tatva\toolchains`, needs no admin rights and adds
-nothing to `PATH`. The card lists every URL and the destination before you press it.
+**All five stages work on the unzipped folder, offline, with nothing else installed.**
+Stage 05 (generate) is the only one that shells out — to a RISC-V cross-compiler and
+QEMU — and as of Beta 2.0 both ship inside the zip, in `toolchain/` beside `TATVA.exe`.
+They are the pinned xPack builds, pruned to the six targets TATVA can emit code for. No
+admin rights, nothing added to `PATH`, nothing written outside the folder.
+
+If you have your own `riscv-none-elf-gcc` or `qemu-system-riscv64` on `PATH`, TATVA
+prefers yours; **Diagnostics** shows the resolved path for each so you can tell which it
+picked.
 
 Four sample models ship inside the zip. Stage 01 shows them as cards — pick **Tiny
 transformer block** for a run with an attention pattern in it, which is the one the
@@ -64,7 +67,7 @@ scripting and CI. It is an alternative to the app, not a prerequisite for it.
 - **Deterministic Emulation:** Execution timing using RISC-V hardware cycle counters (`rdcycle`) under system-mode QEMU (`-icount shift=0`).
 - **Interactive Security-First Diagnostics:** Plain-English failure explanations and resolution guides via Anthropic Claude API (with strict metadata whitelist egress) or local rule-based fallback engines.
 - **Session-Level Content-Hash Cache:** Fast repeated developer compilation runs reusing content-hashed model IRs and build artifacts.
-- **Desktop Optimization Studio:** The primary interface, shipped as `TATVA.exe`. Walks the five stages — 01 input, 02 analyze, 03 map, 04 optimize, 05 generate — with a branded splash while the compiler backend loads, and a measured baseline-vs-optimized chart at the end. Its Diagnostics page installs the RISC-V toolchain in place, so a recipient of the zip never needs a terminal. Runs entirely offline apart from that one explicit download: no CDN, no fonts, no telemetry. Also reachable as `tatva gui` from a source checkout.
+- **Desktop Optimization Studio:** The primary interface, shipped as `TATVA.exe`. Walks the five stages — 01 input, 02 analyze, 03 map, 04 optimize, 05 generate — with a branded splash while the compiler backend loads, and a measured baseline-vs-optimized chart at the end. The RISC-V cross-compiler and QEMU ship inside the zip, so a recipient runs all five stages without a terminal, a download or an account. Runs entirely offline: no CDN, no fonts, no telemetry, no network at any point. Also reachable as `tatva gui` from a source checkout.
 
 ---
 
@@ -219,12 +222,18 @@ Notes that matter:
 - **Windows SmartScreen will warn** that the publisher is unknown, because the build is
   not code-signed. "More info" → "Run anyway". Signing it needs a code-signing
   certificate, which is a purchase, not a build flag.
-- **The RISC-V toolchain is not inside the zip** — it is ~520 MB and platform-specific,
-  which would quadruple the download for the people who already have it. Stages 01–04
-  (input, analyze, map, optimize) work on a bare machine. For stage 05 the recipient presses
-  **Diagnostics → Install the RISC-V toolchain** inside the app; `riscv-none-elf-gcc` and
-  `qemu-system-riscv64` already on `PATH` are picked up instead, and the Diagnostics page
-  shows the resolved path for each.
+- **The RISC-V toolchain is inside the zip**, so the recipient runs all five stages
+  without a download. `build_exe.py` copies `riscv-none-elf-gcc` and
+  `qemu-system-riscv64` into `toolchain/` and prunes them to what TATVA uses: the
+  multilib set is whatever `gcc -print-multi-directory` returns for the six targets in
+  `compiler.TARGETS` — four of the thirty-two shipped — and QEMU keeps one OpenSBI blob
+  instead of firmware for every machine type it supports. That takes 2.1 GB down to
+  436 MB, and the build then compiles all six targets out of the pruned copy before
+  zipping it, so a bad prune fails here rather than on the recipient's laptop. Anything
+  already on their `PATH` still wins.
+- **Building the zip needs a toolchain to copy.** Run `tatva setup` first if you have
+  neither `riscv-toolchain/` nor a per-user install; `build_exe.py` stops and says so
+  rather than shipping a zip that cannot reach stage 05. `--skip-toolchain` opts out.
 
 ### 2. Send them a wheel (for someone who already has Python)
 

@@ -93,6 +93,7 @@ a = Analysis(
         'tatva.config',
         'tatva.diagnostics',
         'tatva.logging_setup',
+        'tatva.nl_config',
         'tatva.optimizer',
         'tatva.runner',
         'tatva.toolchain',

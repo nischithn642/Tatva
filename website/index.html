@@ -152,32 +152,35 @@
 
         <div class="card">
           <h2>What is ready, and what is not</h2>
-          <p class="sub">Taken from the beta scope. Experimental features work but are not yet trustworthy for a production decision.</p>
+          <p class="sub">The status of this build, not a plan. Experimental features work but are not
+            yet trustworthy for a production decision. Anything under Roadmap is not in this build at all.</p>
           <div class="grid three">
             <div>
               <span class="badge available">Available</span>
-              <ul class="tiny muted" style="padding-left:17px;margin-top:9px;line-height:1.75">
+              <ul class="ticks is-available">
                 <li>ONNX model input</li>
                 <li>Graph and operator analysis</li>
                 <li>Softmax fusion pass</li>
                 <li>RV32IMC – RV64GC cross-compile</li>
+                <li>QEMU system-mode validation</li>
                 <li>Desktop app, light and dark</li>
               </ul>
             </div>
             <div>
               <span class="badge experimental">Experimental</span>
-              <ul class="tiny muted" style="padding-left:17px;margin-top:9px;line-height:1.75">
+              <ul class="ticks is-experimental">
                 <li>INT8 quantization</li>
                 <li>Plain-English diagnostics</li>
                 <li>Natural-language config</li>
-                <li>QEMU / Renode validation</li>
+                <li>Assistant and scaffolding</li>
               </ul>
             </div>
             <div>
               <span class="badge roadmap">Roadmap</span>
-              <ul class="tiny muted" style="padding-left:17px;margin-top:9px;line-height:1.75">
+              <ul class="ticks">
                 <li>Vector and matrix extensions</li>
                 <li>Wider operator coverage</li>
+                <li>Renode validation</li>
                 <li>More boards and cores</li>
                 <li>Hosted service</li>
               </ul>
@@ -203,7 +206,7 @@
 
         <div class="card">
           <h2>1 · The model</h2>
-          <p class="sub">ONNX is the supported format. PyTorch and TF/Keras files can be selected but are exported through ONNX first.</p>
+          <p class="sub">ONNX only. A <span class="mono">.pt</span> or <span class="mono">.keras</span> file can be picked here, but TATVA does not convert it — export to ONNX in PyTorch or TensorFlow first, then load that.</p>
 
           <div class="drop" id="drop">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-upload"/></svg>
@@ -211,7 +214,7 @@
             <div class="tiny muted" style="margin-top:4px">or browse for one below</div>
           </div>
 
-          <label class="field" style="margin-top:16px">
+          <label class="field mt">
             <span class="lbl">Model file path</span>
             <input class="input" id="model-path" placeholder="C:\path\to\model.onnx" spellcheck="false">
           </label>
@@ -385,6 +388,38 @@
              doing nothing.</p>
         </div>
 
+        <!-- Natural-language configuration. It sets the same two switches the cards below
+             set and nothing else -- no measurement, no code generation, no hidden state.
+             It is deliberately placed above them so the result of pressing Apply is
+             visible in the same screen: the cards move, and the reasoning says why. -->
+        <div class="card">
+          <div class="row" style="gap:8px">
+            <h2 style="margin-bottom:0">Describe what matters</h2>
+            <span class="badge experimental">Experimental</span>
+          </div>
+          <p class="sub">Optional. Say what you are optimising for and TATVA sets the passes below,
+            then tells you what it chose and why. It only moves the same switches you can click
+            yourself — nothing is built until stage 05.</p>
+
+          <div class="row" style="flex-wrap:nowrap">
+            <input class="input" id="nl-input" style="font-family:var(--sans)"
+                   placeholder="e.g. this has to fit in SRAM on a 32-bit MCU">
+            <button class="btn" id="btn-nl">Apply</button>
+          </div>
+
+          <div class="row mt tiny muted" id="nl-examples" style="gap:6px;flex-wrap:wrap">
+            <span>Try:</span>
+            <button class="btn small nl-eg">lowest latency, accuracy matters</button>
+            <button class="btn small nl-eg">smallest possible binary</button>
+            <button class="btn small nl-eg">RV32IMC, no quantization</button>
+          </div>
+
+          <div class="notice info hidden mt" id="nl-result">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg>
+            <span id="nl-result-text"></span>
+          </div>
+        </div>
+
         <div class="card">
           <h2>Optimization passes</h2>
           <p class="sub">Click a card to turn a pass on or off.</p>
@@ -425,7 +460,7 @@
         <div class="card">
           <h2>Build plan</h2>
           <p class="sub">Exactly what stage 05 will do.</p>
-          <div class="term" id="s4-plan" style="height:auto;min-height:130px"></div>
+          <div class="term auto" id="s4-plan"></div>
         </div>
 
         <div class="row end">
@@ -475,9 +510,9 @@
 
           <div class="term mt" id="terminal"></div>
 
-          <div class="row mt tiny muted">
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9"><use href="#i-info"/></svg>
-            Timings are QEMU system-mode, <span class="mono">-icount shift=0</span>, cycles converted at a nominal 100&nbsp;MHz. Not silicon.
+          <div class="footnote mt">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><use href="#i-info"/></svg>
+            <span>Timings are QEMU system-mode, <span class="mono">-icount shift=0</span>, cycles converted at a nominal 100&nbsp;MHz. Not silicon.</span>
           </div>
         </div>
 
@@ -527,7 +562,7 @@
                 <tbody id="r-table"></tbody>
               </table>
             </div>
-            <div class="term mt" id="r-digest" style="height:auto;min-height:100px"></div>
+            <div class="term auto mt" id="r-digest"></div>
           </div>
         </div>
       </section>
@@ -556,18 +591,19 @@
 
           <div class="notice ok hidden mt" id="diag-ready">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg>
-            <span>Everything stages 04 and 05 need is present. A full compile-and-measure run will complete.</span>
+            <span>Everything stage 05 needs is present. A full compile-and-measure run will complete.</span>
           </div>
 
           <div class="notice warn hidden mt" id="diag-missing">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-alert"/></svg>
-            <span id="diag-missing-text">The RISC-V toolchain is not installed. Stages 01–03 still work; 04 and 05 need it.</span>
+            <span id="diag-missing-text">The RISC-V toolchain was not found. Stages 01–04 still work; only 05 needs it.</span>
           </div>
         </div>
 
-        <!-- The toolchain is not bundled: it is roughly half a gigabyte and licensed
-             separately. This card fetches the same pinned builds `tatva setup` uses,
-             so someone who has the app and not a checkout is not stuck. -->
+        <!-- The packaged app bundles the toolchain, so this card is dead weight there and
+             studio.js hides it once the health check comes back green. It matters for a
+             source checkout or a pip install, which have no bundle: same pinned builds
+             `tatva setup` fetches, so someone without a terminal is not stuck. -->
         <div class="card mt" id="diag-install-card">
           <div class="row between">
             <div>
@@ -590,7 +626,7 @@
           <div class="hidden mt" id="tc-progress">
             <div class="row between tiny mono"><span id="tc-stage">…</span><span id="tc-pct"></span></div>
             <div class="bar mt"><i id="tc-bar"></i></div>
-            <div class="term mt" id="tc-log" style="max-height:150px"></div>
+            <div class="term short mt" id="tc-log"></div>
           </div>
         </div>
       </section>

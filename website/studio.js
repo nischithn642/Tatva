@@ -252,6 +252,23 @@ function term(line, cls) {
 }
 const termClear = () => { const t = $('terminal'); if (t) t.innerHTML = ''; };
 
+// The beta scope calls plain-English diagnostics the key differentiator: on failure the
+// user should get a cause and a recommendation, not a raw compiler error. The backend
+// runs the rule engine and returns the prose; this prints it under its own heading so it
+// reads as an explanation rather than more error output. Numbered mitigation steps are
+// indented so the block scans as a list in a fixed-width terminal.
+function termDiagnosis(text) {
+  const body = String(text || '').trim();
+  if (!body) return;
+  term('WHAT THIS MEANS', 'c-gold');
+  body.split('\n').forEach(line => {
+    const l = line.trimEnd();
+    if (!l) { term(''); return; }
+    term(/^\d+\./.test(l.trim()) ? '  ' + l.trim() : l, 'c-dim');
+  });
+  term('');
+}
+
 /* ============================================================ STAGE 01 — input */
 async function loadTargets() {
   const grid = $('target-grid');
@@ -365,9 +382,26 @@ async function loadSamples() {
   }
 }
 
-function stageError(stage, msg) {
+// The second argument is the backend's plain-English diagnosis, which the beta scope
+// lists as the key differentiator. When present it goes under the raw message rather
+// than replacing it: the raw text is what a user pastes into a search or an issue, the
+// diagnosis is what tells them what to do. The block is rebuilt on every call so a
+// second failure never shows the previous failure's advice.
+function stageError(stage, msg, diagnosis) {
   show(`${stage}-error`, true);
   text(`${stage}-error-text`, msg);
+
+  const host = $(`${stage}-error`);
+  if (!host) return;
+  const old = host.querySelector('.diag-body');
+  if (old) old.remove();
+
+  const body = String(diagnosis || '').trim();
+  if (!body) return;
+  const d = el('div', 'diag-body tiny');
+  d.style.cssText = 'margin-top:8px;white-space:pre-wrap;opacity:.85';
+  d.textContent = body;
+  host.querySelector(`#${stage}-error-text`).appendChild(d);
 }
 function clearStageError(stage) { show(`${stage}-error`, false); }
 
@@ -424,7 +458,7 @@ async function runAnalyze() {
 
   try {
     const a = await call('analyze_model', S.model.path);
-    if (a && a.error) throw new Error(a.error);
+    if (a && a.error) throw Object.assign(new Error(a.error), { diagnosis: a.diagnosis });
     S.analysis = a;
 
     const hist = a.op_histogram || {};
@@ -458,7 +492,7 @@ async function runAnalyze() {
     markDone('s2', true);
     $('btn-s2-next').disabled = false;
   } catch (e) {
-    stageError('s2', e.message);
+    stageError('s2', e.message, e.diagnosis);
     markDone('s2', false);
   } finally {
     btn.disabled = false; btn.classList.remove('loading');
@@ -476,7 +510,9 @@ async function runMap() {
 
   try {
     const m = await call('map_operators', S.model.path, S.target.name);
-    if (!m || !m.success) throw new Error((m && m.error) || 'Mapping failed.');
+    if (!m || !m.success) {
+      throw Object.assign(new Error((m && m.error) || 'Mapping failed.'), { diagnosis: m && m.diagnosis });
+    }
     S.mapping = m;
 
     text('s3-target', `${m.target} (${m.march})`);
@@ -523,7 +559,7 @@ async function runMap() {
     markDone('s3', true);
     $('btn-s3-next').disabled = false;
   } catch (e) {
-    stageError('s3', e.message);
+    stageError('s3', e.message, e.diagnosis);
     markDone('s3', false);
   } finally {
     btn.disabled = false; btn.classList.remove('loading');
@@ -538,6 +574,88 @@ function togglePass(name) {
   markDone('s4', true);
   if (S.result) { S.result = null; show('report-body', false); show('report-empty', true); markDone('s5', false); $('btn-s5-next').disabled = true; }
   renderPlan();
+}
+
+// Apply a pass state directly rather than through togglePass, which flips. Shares the
+// invalidation logic: any change to the passes makes an existing measurement describe a
+// build that is no longer selected.
+function setPass(name, on) {
+  if (S.passes[name] === on) return false;
+  S.passes[name] = on;
+  $(name === 'fuse' ? 'pass-fuse' : 'pass-quant').classList.toggle('selected', on);
+  return true;
+}
+
+/* ---- natural-language configuration ---------------------------------------
+ * Listed as experimental in the beta scope, and the honest reading of that word here
+ * is: it is a phrase matcher, not a language model. It runs offline, it is
+ * deterministic, and it can only set the same two switches and the target that the
+ * cards on this page already set. It shows its reasoning for exactly that reason --
+ * the user has to be able to see the mapping and overrule it before a build.
+ */
+async function applyNlConfig(raw) {
+  const input = $('nl-input');
+  const textIn = String(raw != null ? raw : (input ? input.value : '')).trim();
+  if (!textIn) { show('nl-result', false); return; }
+
+  const btn = $('btn-nl');
+  if (btn) { btn.disabled = true; btn.classList.add('loading'); }
+
+  let r;
+  try { r = await call('interpret_config', textIn, S.target ? S.target.name : '', S.passes.fuse, S.passes.quantize); }
+  catch (e) { r = { success: false, error: e.message }; }
+  finally { if (btn) { btn.disabled = false; btn.classList.remove('loading'); } }
+
+  const box = $('nl-result');
+  const out = $('nl-result-text');
+  if (!box || !out) return;
+  show('nl-result', true);
+  out.innerHTML = '';
+
+  if (!r || !r.success) {
+    box.className = 'notice err mt';
+    out.textContent = (r && r.error) || 'That could not be read as a configuration.';
+    return;
+  }
+
+  if (!r.matched) {
+    // Saying nothing changed is more useful than silently leaving the switches alone
+    // and letting the user assume the sentence was understood.
+    box.className = 'notice warn mt';
+    out.textContent = 'Nothing in that matched a known priority, target or pass, so the '
+      + 'settings below are unchanged. Try naming a target (RV32IMC, RV64GC), a pass '
+      + '(fusion, INT8), or what you are optimising for (size, latency, accuracy).';
+    return;
+  }
+
+  let changed = false;
+  if (r.target && S.target && r.target !== S.target.name) { selectTarget(r.target); changed = true; }
+  if (setPass('fuse', !!r.fuse)) changed = true;
+  if (setPass('quantize', !!r.quantize)) changed = true;
+
+  show('s4-quant-warn', S.passes.quantize);
+  markDone('s4', true);
+  if (changed && S.result) {
+    S.result = null;
+    show('report-body', false); show('report-empty', true);
+    markDone('s5', false); $('btn-s5-next').disabled = true;
+  }
+  renderPlan();
+
+  box.className = 'notice ' + (r.conflicts && r.conflicts.length ? 'warn' : 'ok') + ' mt';
+  const head = el('div');
+  head.innerHTML = `<b>${esc(r.summary || '')}</b>`;
+  out.appendChild(head);
+  (r.reasons || []).concat(r.conflicts || []).forEach(line => {
+    const d = el('div', 'tiny');
+    d.style.cssText = 'margin-top:5px;opacity:.85';
+    d.textContent = '· ' + line;
+    out.appendChild(d);
+  });
+  const foot = el('div', 'tiny');
+  foot.style.cssText = 'margin-top:7px;opacity:.7';
+  foot.textContent = 'Change any of it with the cards below — this only set the switches.';
+  out.appendChild(foot);
 }
 
 function renderPlan() {
@@ -601,11 +719,14 @@ async function runBuild() {
         (missing.length > 1 ? 'are' : 'is') + ' not installed.', 'c-err');
       term('');
       term('Stage 05 compiles the generated C for the target and runs it under emulation,', 'c-dim');
-      term('so both tools have to be present. TATVA does not bundle them: together they', 'c-dim');
-      term('are about half a gigabyte and licensed separately.', 'c-dim');
+      term('so both tools have to be present.', 'c-dim');
       term('');
-      term('Open Diagnostics and press "Install toolchain". It downloads the pinned', 'c-gold');
-      term('builds into your user folder — no admin rights, nothing added to PATH.', 'c-gold');
+      // The packaged app ships these, so on that build a miss almost always means the exe
+      // got dragged out of its folder. A source checkout has no bundle and needs the
+      // installer, and the same code runs in both -- so name both rather than guess.
+      term('The app ships them in a "toolchain" folder next to TATVA.exe. If TATVA.exe', 'c-gold');
+      term('was moved on its own, put it back beside that folder.', 'c-gold');
+      term('Running from source instead? Open Diagnostics and press "Install toolchain".', 'c-gold');
       show('s5-toolchain', true);
       return;
     }
@@ -659,12 +780,13 @@ async function runBuild() {
     // If the run then dies on a missing binary anyway, say what to do about it rather
     // than leaving "cross-compiler binary not found" as the last word.
     if (/cross-compiler binary not found|emulator binary not found/i.test(msg)) {
-      term('That binary is part of the RISC-V toolchain, which TATVA does not bundle.', 'c-dim');
-      term('Open Diagnostics and press "Install toolchain" — it downloads the pinned', 'c-gold');
-      term('builds into your user folder, with no admin rights needed.', 'c-gold');
+      term('That binary is part of the RISC-V toolchain the app ships in its "toolchain"', 'c-dim');
+      term('folder. Check that folder is still next to TATVA.exe — moving the exe out on', 'c-gold');
+      term('its own leaves it behind. From a source checkout, use Install toolchain.', 'c-gold');
       term('');
       show('s5-toolchain', true);
     }
+    termDiagnosis(r && r.diagnosis);
     term('Nothing was measured, so the report page stays empty.', 'c-dim');
     S.result = null;
     markDone('s5', false);
@@ -689,6 +811,9 @@ async function runBuild() {
   }
   term(`status      ${r.status}`, r.accuracy_ok ? 'c-ok' : 'c-err');
   term('');
+  // A build that compiles and runs but misses parity is still a result the user has to
+  // act on, so the diagnosis belongs here too, not only on the exception path.
+  if (!r.accuracy_ok) termDiagnosis(r.diagnosis);
   term(`Completed in ${secs}s. Full numbers on the Benchmark Report page.`, 'c-gold');
 
   markDone('s5', true);
@@ -935,14 +1060,17 @@ async function loadHealth() {
   if (missingReq.length) {
     text('diag-missing-text',
       `${missingReq.join(' and ')} ${missingReq.length > 1 ? 'are' : 'is'} not installed. ` +
-      'Stages 01–03 still work; 04 and 05 need it. Use Install toolchain below.');
+      // 01-04 need nothing external; 05 is the only stage that shells out. This used to
+      // say 04 and 05, which sent people looking for an install they did not need.
+      'Stages 01–04 still work; only 05 needs it. The packaged app ships one in its ' +
+      '"toolchain" folder — if that is missing, TATVA.exe has been moved away from it.');
   }
 
   if (!missingReq.length) setHealthPill('ok', 'Toolchain ready');
   else if (h.gcc || h.qemu) setHealthPill('warn', `${missingReq.join(' + ')} missing`);
   else setHealthPill('err', 'Toolchain not installed');
 
-  loadToolchainPlan();
+  loadToolchainPlan(missingReq.length > 0);
 }
 
 /* ---- in-app toolchain install --------------------------------------------
@@ -951,13 +1079,24 @@ async function loadHealth() {
  * cross-compiler binary not found", with the documented fix being a terminal
  * command from a repository they do not have.
  */
-async function loadToolchainPlan() {
+async function loadToolchainPlan(needed) {
   const tb = $('tc-plan');
+  const card = $('diag-install-card');
+
+  // This card is a recovery path, not a setup step. The packaged app already ships the
+  // toolchain, so on that build the health check comes back green and a prominent
+  // "Install the RISC-V toolchain" button would be inviting a half-gigabyte download
+  // for something already sitting next to the exe. Show it only when something is
+  // actually missing -- i.e. a source checkout or a pip install that never ran setup.
+  if (!needed) {
+    if (card) card.classList.add('hidden');
+    return;
+  }
+
   let p;
   try { p = await call('get_toolchain_plan'); }
   catch { return; }
 
-  const card = $('diag-install-card');
   if (!p || !p.supported) {
     if (card) card.classList.add('hidden');
     return;
@@ -1173,6 +1312,15 @@ function wire() {
 
   $('pass-fuse').addEventListener('click', () => togglePass('fuse'));
   $('pass-quant').addEventListener('click', () => togglePass('quantize'));
+
+  $('btn-nl').addEventListener('click', () => applyNlConfig());
+  $('nl-input').addEventListener('keydown', e => { if (e.key === 'Enter') applyNlConfig(); });
+  // The examples are the documentation. Someone who has never seen this field has no
+  // idea what it accepts, and a placeholder shows only one shape of answer.
+  document.querySelectorAll('.nl-eg').forEach(b => b.addEventListener('click', () => {
+    $('nl-input').value = b.textContent.trim();
+    applyNlConfig();
+  }));
   $('btn-s4-next').addEventListener('click', () => { markDone('s4', true); switchView('s5'); });
 
   $('btn-build').addEventListener('click', runBuild);

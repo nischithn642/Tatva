@@ -16,7 +16,7 @@ from click.testing import CliRunner
 
 from scaffolding.executor import ToolchainManager
 from tatva.cli import cli
-from tatva.runner import find_qemu, find_riscv_gcc
+from tatva.runner import bundled_tools_dir, find_qemu, find_riscv_gcc
 from tatva.toolchain import (
     COMPONENTS,
     ToolchainUnavailableError,
@@ -324,3 +324,85 @@ def test_setup_rejects_an_unknown_component_name() -> None:
 
     assert res.exit_code == 2
     assert "llvm" in res.output
+
+
+# --- The toolchain bundled inside the desktop build --------------------------------
+
+
+@pytest.fixture
+def bundled_toolchain(tmp_path, monkeypatch):
+    """A staged toolchain inside the app folder, the way the desktop build ships one."""
+    root = tmp_path / "app" / "toolchain"
+    root.mkdir(parents=True)
+    monkeypatch.setattr("tatva.runner.bundled_tools_dir", lambda: str(root))
+    return root
+
+
+@pytest.mark.unit
+def test_a_packaged_build_looks_beside_its_own_exe(tmp_path, monkeypatch) -> None:
+    """
+    The app folder gets unzipped wherever the recipient happens to put it, so the bundled
+    path has to come from the running executable and not from anything fixed at build time.
+    """
+    exe = tmp_path / "Downloads" / "TATVA" / "TATVA.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("")
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe))
+
+    assert bundled_tools_dir() == str(exe.parent / "toolchain")
+
+
+@pytest.mark.unit
+def test_stage_05_works_on_an_unpacked_zip_with_nothing_installed(
+    tools_root, no_repo_toolchain, bundled_toolchain
+) -> None:
+    """
+    The reason the toolchain is bundled at all: no PATH entry, no `tatva setup`, no
+    network, and the one stage that produces a measurement still has both binaries.
+    """
+    gcc = _plant_fake_exe(bundled_toolchain, "riscv-none-elf-gcc", "riscv-none-elf-gcc")
+    qemu = _plant_fake_exe(bundled_toolchain, "qemu-riscv", "qemu-system-riscv64")
+
+    with patch("shutil.which", return_value=None):
+        _, gcc_path = find_riscv_gcc()
+        _, qemu_path = find_qemu(64)
+
+    assert os.path.samefile(gcc_path, gcc)
+    assert os.path.samefile(qemu_path, qemu)
+
+
+@pytest.mark.unit
+def test_a_hand_installed_toolchain_wins_over_the_bundled_copy(
+    tools_root, no_repo_toolchain, bundled_toolchain
+) -> None:
+    """
+    Someone who runs `tatva setup` to get a different build should not also have to delete
+    files out of the app folder before it takes effect.
+    """
+    _plant_fake_exe(bundled_toolchain, "riscv-none-elf-gcc", "riscv-none-elf-gcc")
+    installed = _plant_fake_exe(tools_root, "riscv-none-elf-gcc", "riscv-none-elf-gcc")
+
+    with patch("shutil.which", return_value=None):
+        _, path = find_riscv_gcc()
+
+    assert os.path.samefile(path, installed)
+
+
+@pytest.mark.unit
+def test_diagnostics_reports_the_bundled_toolchain_as_present(
+    tools_root, no_repo_toolchain, bundled_toolchain
+) -> None:
+    """
+    Diagnostics and stage 05 share one resolver, so bundling a toolchain has to turn the
+    badge green too -- not leave the page telling people to install what they already have.
+    """
+    _plant_fake_exe(bundled_toolchain, "riscv-none-elf-gcc", "riscv-none-elf-gcc")
+    _plant_fake_exe(bundled_toolchain, "qemu-riscv", "qemu-system-riscv64")
+
+    with patch("shutil.which", return_value=None):
+        health = ToolchainManager.get_health_status()
+
+    assert health["gcc"] and health["qemu"]
+    assert "🔴" not in health["status_badge"]

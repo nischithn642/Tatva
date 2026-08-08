@@ -1292,6 +1292,25 @@ class TatvaApp(tk.Tk):
         return self._analyze_model() or {}
 
 
+def _diagnose(exc: BaseException) -> str:
+    """
+    Turn a caught exception into the plain-English cause-and-recommendation text the beta
+    scope lists as the key differentiator.
+
+    Every bridge method that can fail routes through here so the front end never has to
+    show a bare `str(exception)`. `explain` prefers the Claude API when a key is
+    configured and otherwise uses the deterministic offline rule engine, so this works
+    with no network. Diagnosis is strictly additive — a failure to diagnose must never
+    suppress the underlying error, so anything raised here is swallowed and the caller
+    still reports the raw message alongside.
+    """
+    try:
+        from tatva.diagnostics import classify_failure, explain
+        return explain(classify_failure(exc))
+    except Exception:
+        return ""
+
+
 class TatvaPyBridge:
     """
     Bidirectional Python-JavaScript PyBridge for PyWebView Edge WebView2 Desktop Window.
@@ -1740,7 +1759,11 @@ class TatvaPyBridge:
                 "has_transformer_bottleneck": getattr(stats, "has_transformer_bottleneck", False),
             }
         except Exception as e:
-            return {"filename": os.path.basename(model_path), "error": f"Analysis failed: {e}"}
+            return {
+                "filename": os.path.basename(model_path),
+                "error": f"Analysis failed: {e}",
+                "diagnosis": _diagnose(e),
+            }
 
     def map_operators(self, model_path: str, target_name: str) -> dict[str, Any]:
         """
@@ -1826,7 +1849,46 @@ class TatvaPyBridge:
                 "ready": not unsupported,
             }
         except Exception as e:
-            return {"success": False, "error": f"Operator mapping failed: {e}"}
+            return {"success": False, "error": f"Operator mapping failed: {e}", "diagnosis": _diagnose(e)}
+
+    def interpret_config(
+        self,
+        text: str,
+        target_name: str = "",
+        fuse_softmax: bool = True,
+        do_quantize: bool = False,
+    ) -> dict[str, Any]:
+        """
+        Resolve a plain-English priority into a build configuration.
+
+        Deterministic and offline -- see nl_config for why that matters. This only ever
+        proposes the same switches the checkboxes set, and it returns the reasoning so
+        the front end can show what it decided and why before anything is built.
+        """
+        try:
+            from tatva.compiler import DEFAULT_TARGET
+            from tatva.nl_config import interpret, summarise
+
+            intent = interpret(
+                text,
+                target=target_name or DEFAULT_TARGET,
+                fuse=bool(fuse_softmax),
+                quantize=bool(do_quantize),
+            )
+            return {
+                "success": True,
+                "error": "",
+                "target": intent.target,
+                "fuse": intent.fuse,
+                "quantize": intent.quantize,
+                "accuracy_tolerance": intent.accuracy_tolerance,
+                "reasons": intent.reasons,
+                "conflicts": intent.conflicts,
+                "matched": intent.matched,
+                "summary": summarise(intent),
+            }
+        except Exception as e:
+            return {"success": False, "error": f"Could not read that as a configuration: {e}"}
 
     def run_pipeline(self, model_path: str, target_name: str, fuse_softmax: bool = True, do_quantize: bool = False) -> dict[str, Any]:
         """
@@ -1881,9 +1943,19 @@ class TatvaPyBridge:
                 f"Measurement         : QEMU system-mode, rdcycle, -icount shift=0"
             )
 
+            # A run that completes but lands outside the parity tolerance is a failure the
+            # user has to act on, and "FAIL [accuracy outside tolerance]" does not say what
+            # to do about it. compare_configs returns rather than raises here, so build the
+            # same context classify_failure would have produced from an AccuracyDropError.
+            diagnosis = ""
+            if not accuracy_ok:
+                from tatva.diagnostics import AccuracyDropError
+                diagnosis = _diagnose(AccuracyDropError(mse=float(mse), tolerance=0.05))
+
             return {
                 "success": True,
                 "error": "",
+                "diagnosis": diagnosis,
                 "config_digest": digest,
                 # Four decimals, not two. A small model runs in well under a millisecond
                 # under QEMU, and rounding to 2 dp turned a real baseline/optimized gap
@@ -1903,10 +1975,17 @@ class TatvaPyBridge:
                 "status": "PASS [OK]" if accuracy_ok else "FAIL [accuracy outside tolerance]",
             }
         except Exception as e:
+            # The beta scope calls plain-English diagnostics the key differentiator, and
+            # this is the one place a user actually meets a compiler failure. Returning
+            # str(e) here handed them the raw exception -- "Memory limit exceeded: 720896
+            # bytes" -- which is exactly the raw-compiler-error experience the rule engine
+            # in diagnostics.py exists to replace. The CLI (`tatva diagnose`) and the
+            # legacy Tk front end already route through it; the web GUI did not.
             return {
                 "success": False,
                 "measured": False,
                 "error": f"Pipeline failed: {e}",
+                "diagnosis": _diagnose(e),
                 "config_digest": (
                     f"=== TATVA RISC-V OPTIMIZATION PIPELINE — FAILED ===\n"
                     f"Target Architecture : {target_name}\n"

@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from enum import Enum
 from typing import Any
@@ -30,6 +31,7 @@ __all__ = [
     "CompiledArtifact",
     "ExecutionEnvironment",
     "MeasurementResult",
+    "bundled_tools_dir",
     "compile_model",
     "default_input_array",
     "default_inputs_for",
@@ -45,6 +47,29 @@ PROJECT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."
 
 # How many unnamed build directories to keep before pruning the oldest.
 _BUILD_DIR_KEEP = 8
+
+
+def bundled_tools_dir() -> str | None:
+    """
+    The toolchain shipped inside the app folder, or None if this is not a packaged build.
+
+    The desktop build ships the cross-compiler and QEMU in `toolchain/` beside TATVA.exe,
+    so stage 05 works the moment the zip is unpacked -- no download, no network, no admin
+    rights. Previously the app could only reach a toolchain the user had gone and fetched,
+    which meant the one stage that produces a measurement was the one stage that did not
+    work out of the box.
+
+    Layout matches the per-user install directory exactly (`<name>/bin/...`), so the same
+    search code handles both and there is only one thing to get right.
+    """
+    if getattr(sys, "frozen", False):
+        # One-folder PyInstaller build: sys.executable is <app>/TATVA.exe.
+        return os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "toolchain")
+
+    # A source checkout can stage the same directory to test the packaged layout without
+    # running a five-minute PyInstaller build.
+    candidate = os.path.join(PROJECT_DIR, "toolchain")
+    return candidate if os.path.isdir(candidate) else None
 
 
 def build_root() -> str:
@@ -387,16 +412,27 @@ def _search_bin_dirs(install_name: str, legacy_dir: str) -> list[str]:
     Directories to search for a toolchain binary, in priority order.
 
     `tatva setup` installs into a per-user tools directory so that a pip-installed TATVA
-    and a git checkout share one copy. The legacy `<repo>/riscv-toolchain` and
-    `<repo>/qemu` paths are still searched so nobody who ran the old setup_env.py has to
-    re-download half a gigabyte.
+    and a git checkout share one copy. That comes first: someone who deliberately ran
+    `tatva setup` wants the copy they installed.
+
+    The bundled directory comes next. It is the one the desktop build ships with, so it
+    is what makes stage 05 work on an unpacked zip with no network. It sits below the
+    per-user path rather than above it so that installing a newer toolchain by hand still
+    takes effect without anyone having to delete files out of the app folder.
+
+    The legacy `<repo>/riscv-toolchain` and `<repo>/qemu` paths are still searched last so
+    nobody who ran the old setup_env.py has to re-download half a gigabyte.
     """
     from tatva.toolchain import tools_dir
 
-    return [
-        os.path.join(tools_dir(), install_name, "bin"),
-        os.path.join(PROJECT_DIR, legacy_dir, "bin"),
-    ]
+    dirs = [os.path.join(tools_dir(), install_name, "bin")]
+
+    bundled = bundled_tools_dir()
+    if bundled:
+        dirs.append(os.path.join(bundled, install_name, "bin"))
+
+    dirs.append(os.path.join(PROJECT_DIR, legacy_dir, "bin"))
+    return dirs
 
 
 def _first_existing_exe(bin_dirs: list[str], exe_names: list[str]) -> str | None:

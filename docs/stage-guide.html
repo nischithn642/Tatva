@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>TATVA — What Each Stage Does</title>
+<!--
+  Print source for TATVA-Stage-Guide.pdf.
+
+  Rendered with:  msedge.exe --headless --print-to-pdf=... --no-pdf-header-footer
+  Regenerate with: python tools/make_stage_guide.py
+
+  Written for print, not for the screen: fixed A4 page boxes, one stage per page, and
+  no colour that stops meaning anything in greyscale. Every number quoted here comes
+  from a run recorded in CHANGELOG.md -- nothing in this document is estimated.
+-->
+<style>
+  @page { size: A4; margin: 17mm 16mm 15mm; }
+
+  :root {
+    --gold: #A9761F;
+    --gold-soft: #FBF3E4;
+    --ink: #16161A;
+    --ink-2: #4A4A55;
+    --ink-3: #7C7C88;
+    --line: #DCDCD6;
+    --ok: #1D7A45;
+    --warn: #A96A00;
+    --err: #B3261E;
+    --mono: "Cascadia Mono", Consolas, "Courier New", monospace;
+    --sans: "Segoe UI", Calibri, Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: var(--sans);
+    font-size: 9.7pt;
+    line-height: 1.43;
+    color: var(--ink);
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  h1, h2, h3 { margin: 0; font-weight: 700; letter-spacing: -0.01em; }
+  p { margin: 0 0 6pt; }
+  code, .mono { font-family: var(--mono); font-size: 9pt; }
+
+  .page { page-break-after: always; }
+  .page:last-child { page-break-after: auto; }
+
+  /* ---------------------------------------------------------------- cover */
+
+  .cover { height: 250mm; display: flex; flex-direction: column; }
+  .cover-top { flex: 1; }
+  .rule { height: 3pt; background: var(--gold); width: 70pt; border-radius: 2pt; margin-bottom: 14pt; }
+  .cover h1 { font-size: 30pt; line-height: 1.12; margin-bottom: 10pt; }
+  .cover .lede { font-size: 12pt; color: var(--ink-2); max-width: 125mm; }
+  .cover .meta { font-family: var(--mono); font-size: 8.5pt; color: var(--ink-3); letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 26pt; }
+  .cover-foot { border-top: 1pt solid var(--line); padding-top: 9pt; font-size: 8.5pt; color: var(--ink-3); }
+
+  /* pipeline strip on the cover */
+  .flow { display: flex; align-items: stretch; gap: 0; margin: 22pt 0 4pt; }
+  .flow-step { flex: 1; padding: 9pt 8pt; border: 1pt solid var(--line); border-left: none; }
+  .flow-step:first-child { border-left: 1pt solid var(--line); border-radius: 5pt 0 0 5pt; }
+  .flow-step:last-child { border-radius: 0 5pt 5pt 0; }
+  .flow-step .no { font-family: var(--mono); font-size: 13pt; font-weight: 700; color: var(--gold); }
+  .flow-step .nm { font-size: 9.5pt; font-weight: 700; margin-top: 1pt; }
+  .flow-step .tg { font-size: 7.5pt; color: var(--ink-3); line-height: 1.35; margin-top: 2pt; }
+  .flow-note { font-size: 8pt; color: var(--ink-3); }
+
+  /* ---------------------------------------------------------------- stage */
+
+  .stage-head { border-bottom: 1.5pt solid var(--gold); padding-bottom: 7pt; margin-bottom: 11pt; }
+  .stage-head .kicker { font-family: var(--mono); font-size: 8.5pt; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--gold); }
+  .stage-head h2 { font-size: 18pt; margin-top: 3pt; }
+  .stage-head .one-line { font-size: 10pt; color: var(--ink-2); margin-top: 4pt; }
+
+  h3 { font-size: 10.2pt; margin: 10pt 0 4pt; }
+  h3:first-of-type { margin-top: 0; }
+
+  ul { margin: 0 0 7pt; padding-left: 14pt; }
+  li { margin-bottom: 2pt; }
+
+  /* the in/out strip under each stage heading */
+  .io { display: flex; gap: 8pt; margin-bottom: 10pt; }
+  .io > div { flex: 1; border: 1pt solid var(--line); border-radius: 5pt; padding: 6pt 9pt; }
+  .io .k { font-size: 7.5pt; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 2pt; }
+  .io .v { font-size: 9pt; line-height: 1.4; }
+  .io.needs-none { border-left: 2.5pt solid var(--ok); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 8.6pt; margin-bottom: 8pt; }
+  th { text-align: left; background: #F2F2EE; padding: 4pt 7pt; font-size: 7.5pt; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-3); border-bottom: 1pt solid var(--line); }
+  td { padding: 4pt 7pt; border-bottom: 1pt solid var(--line); vertical-align: top; }
+  td.mono, th.mono { font-family: var(--mono); }
+
+  .box { border: 1pt solid var(--line); border-radius: 5pt; padding: 8pt 10pt; margin-bottom: 8pt; font-size: 8.8pt; }
+  .box.gold { background: var(--gold-soft); border-color: #E8D3A8; }
+  .box.warn { background: #FDF6E7; border-color: #EBD7A6; }
+  .box .t { font-weight: 700; margin-bottom: 3pt; }
+
+  pre {
+    font-family: var(--mono);
+    font-size: 8pt;
+    line-height: 1.5;
+    background: #14141A;
+    color: #E4E4EC;
+    padding: 8pt 10pt;
+    border-radius: 5pt;
+    margin: 0 0 8pt;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  pre .c { color: #8A8A99; }
+
+  .pill { display: inline-block; padding: 1pt 6pt; border-radius: 9pt; font-size: 7.5pt; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+  .pill.ok { background: #E4F2EA; color: var(--ok); }
+  .pill.warn { background: #FBF0DC; color: var(--warn); }
+  .pill.err { background: #F8E5E4; color: var(--err); }
+
+  .foot { position: running(foot); }
+  .small { font-size: 8pt; color: var(--ink-3); }
+</style>
+</head>
+<body>
+
+<!-- ============================================================== COVER -->
+<section class="page cover">
+  <div class="cover-top">
+    <div class="rule"></div>
+    <div class="meta">TATVA · Beta 2.0 · build 2.0.0b1</div>
+    <h1>What each stage does</h1>
+    <p class="lede">TATVA takes a trained ONNX model and produces a standalone C99 program that
+      runs on a bare-metal RISC-V core, then measures it. This is what happens at each of the
+      five stages, what each one needs, and what each one can tell you.</p>
+
+    <div class="flow">
+      <div class="flow-step"><div class="no">01</div><div class="nm">Input</div><div class="tg">model&nbsp;+ target chip</div></div>
+      <div class="flow-step"><div class="no">02</div><div class="nm">Analyze</div><div class="tg">graph&nbsp;+ operators</div></div>
+      <div class="flow-step"><div class="no">03</div><div class="nm">Map</div><div class="tg">operator → lowering</div></div>
+      <div class="flow-step"><div class="no">04</div><div class="nm">Optimize</div><div class="tg">choose passes</div></div>
+      <div class="flow-step"><div class="no">05</div><div class="nm">Generate</div><div class="tg">build&nbsp;+ measure</div></div>
+    </div>
+    <p class="flow-note">Stages 01–04 run entirely inside the app. Stage 05 is the only one that
+      shells out to another program — the RISC-V cross-compiler and the QEMU emulator, both
+      bundled with this build.</p>
+
+    <div class="box gold" style="margin-top:20pt">
+      <div class="t">Everything runs on the machine in front of you</div>
+      No account, no upload, no telemetry, no network call. A model never leaves the disk it is
+      on, and a complete five-stage run needs no connection at any point. The one exception is
+      opt-in and off by default: the Assistant panel talks to whichever LLM provider you
+      configure yourself.
+    </div>
+  </div>
+
+  <div class="cover-foot">
+    TATVA Optimization Studio · Bare-metal RISC-V compilation and benchmarking ·
+    Measurements in this document are QEMU system-mode emulation, not silicon.
+  </div>
+</section>
+
+<!-- ============================================================== 01 -->
+<section class="page">
+  <div class="stage-head">
+    <div class="kicker">Stage 01</div>
+    <h2>Input — load the model, pick the chip</h2>
+    <div class="one-line">Establishes the two facts everything downstream depends on: what you are
+      compiling, and what you are compiling it for.</div>
+  </div>
+
+  <div class="io">
+    <div><div class="k">Needs</div><div class="v">An <code>.onnx</code> file. Nothing else — no toolchain, no network.</div></div>
+    <div><div class="k">Produces</div><div class="v">A loaded model, its size and SHA-256, and a selected RISC-V target.</div></div>
+    <div><div class="k">Typical time</div><div class="v">Under a second.</div></div>
+  </div>
+
+  <h3>What happens</h3>
+  <p>The file is read from disk in the app's own process. TATVA records its size, computes a
+    SHA-256 (the first 12 hex digits are shown, so you can tell two similar exports apart), and
+    counts the operator nodes in the ONNX graph without importing it yet. Four sample models ship
+    with the app, so a first run has something to compile.</p>
+
+  <div class="box warn">
+    <div class="t">ONNX only — TATVA does not convert</div>
+    A <code>.pt</code>, <code>.pth</code> or <code>.keras</code> file can be selected, and the app
+    will tell you it cannot read it. Export to ONNX from PyTorch or TensorFlow first
+    (<code>torch.onnx.export</code>, <code>tf2onnx</code>) and load that file. This is a deliberate
+    boundary: a conversion TATVA performed silently would be a second place for the model to
+    change before anything is measured.
+  </div>
+
+  <h3>Choosing the target</h3>
+  <p>The list is read live from the compiler's target registry, so it is always exactly what the
+    code generator will accept. The target decides the instruction set, the ABI, and which
+    multilib the linker pulls in — it is not a label, it changes the binary.</p>
+
+  <table>
+    <thead><tr><th class="mono">Target</th><th class="mono">-march</th><th>Width</th><th>Use it when</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">RV32IMC</td><td class="mono">rv32imc</td><td>32-bit</td><td>Small microcontroller class core; smallest of the 32-bit options.</td></tr>
+      <tr><td class="mono">RV32IMAC</td><td class="mono">rv32imac</td><td>32-bit</td><td>As above, with atomics.</td></tr>
+      <tr><td class="mono">RV64GC</td><td class="mono">rv64gc</td><td>64-bit</td><td><b>Default.</b> General-purpose application core with hardware floating point.</td></tr>
+      <tr><td class="mono">RV64IMAFDC</td><td class="mono">rv64imafdc</td><td>64-bit</td><td>The same ground as RV64GC, spelled out extension by extension.</td></tr>
+      <tr><td class="mono">RV64GCV</td><td class="mono">rv64gcv</td><td>64-bit</td><td><span class="pill warn">Experimental</span> Vector extension present. Code generation does not yet emit vector instructions.</td></tr>
+      <tr><td class="mono">RV32EMC</td><td class="mono">rv32emc</td><td>32-bit</td><td><span class="pill warn">Experimental</span> Embedded profile, 16 registers.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>What can go wrong here</h3>
+  <ul>
+    <li><b>The file is not ONNX.</b> Export it properly rather than renaming it.</li>
+    <li><b>The ONNX file is a newer opset than the importer handles.</b> Stage 02 reports it, with the operator named.</li>
+  </ul>
+</section>
+
+<!-- ============================================================== 02 -->
+<section class="page">
+  <div class="stage-head">
+    <div class="kicker">Stage 02</div>
+    <h2>Analyze — read the graph and count what is in it</h2>
+    <div class="one-line">Turns the model file into a structure TATVA can reason about, and finds
+      the pattern that stage 04 knows how to speed up.</div>
+  </div>
+
+  <div class="io">
+    <div><div class="k">Needs</div><div class="v">A model from stage 01. No toolchain.</div></div>
+    <div><div class="k">Produces</div><div class="v">Operator counts, an operator histogram, and an attention-pattern verdict.</div></div>
+    <div><div class="k">Typical time</div><div class="v">A few seconds; slower on the first run while the importer loads.</div></div>
+  </div>
+
+  <h3>What happens</h3>
+  <p>The ONNX graph is imported into Apache TVM's Relax intermediate representation — the same
+    importer the command line's <code>tatva analyze</code> uses, so the app and the CLI cannot
+    disagree. TATVA then counts every operator call, counts how many distinct kinds there are, and
+    builds the histogram shown on the page.</p>
+
+  <h3>The attention pattern</h3>
+  <p>The one structural thing stage 02 looks for is a <b>softmax feeding a matrix multiply</b> —
+    the shape of an attention block. This matters because it is precisely the subgraph the softmax
+    fusion pass in stage 04 rewrites. A model without it is not broken and will compile normally;
+    it simply has nothing for that pass to fuse, and stage 05 will honestly report a 0.00% change.</p>
+
+  <div class="box">
+    <div class="t">Reading the histogram</div>
+    A long tail of one-off operators usually means the export carried shape-manipulation nodes
+    that a cleanup pass would remove. A few operators repeated many times is the normal shape of a
+    transformer block and is what stage 03 will spend its time on.
+  </div>
+
+  <h3>What can go wrong here</h3>
+  <ul>
+    <li><b>An operator the importer does not know.</b> The failure names it. This is a stage-02
+      answer to a question that would otherwise have surfaced as a compile error minutes later.</li>
+    <li><b>A malformed or truncated ONNX file.</b> Re-export it.</li>
+  </ul>
+  <p class="small">When a run fails, the app also prints a plain-English explanation under the error
+    — what the failure category means and what to do about it — rather than only the exception text.</p>
+</section>
+
+<!-- ============================================================== 03 -->
+<section class="page">
+  <div class="stage-head">
+    <div class="kicker">Stage 03</div>
+    <h2>Map — check every operator against the chosen chip</h2>
+    <div class="one-line">Answers, before anything is built: can this target actually run this
+      model, and how will each operator be turned into machine code?</div>
+  </div>
+
+  <div class="io">
+    <div><div class="k">Needs</div><div class="v">Stage 02's analysis, and the target from stage 01.</div></div>
+    <div><div class="k">Produces</div><div class="v">A per-operator lowering table and a go / no-go verdict.</div></div>
+    <div><div class="k">Typical time</div><div class="v">Under a second.</div></div>
+  </div>
+
+  <h3>What happens</h3>
+  <p>Every operator found in stage 02 is checked against two things: whether the selected target
+    can execute it at all, and how TATVA's code generator intends to lower it. The result is one
+    row per operator with a verdict.</p>
+
+  <table>
+    <thead><tr><th style="width:88pt">Verdict</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><span class="pill ok">Fused</span></td><td>Emitted as a single fused kernel rather than as separate operators. This is where the measured gain comes from.</td></tr>
+      <tr><td><span class="pill warn">Hot path</span></td><td>Supported, and expected to dominate the cycle count. Worth looking at if the result disappoints.</td></tr>
+      <tr><td><span class="pill ok">Mapped</span></td><td>Supported, lowered to a scalar loop nest. Correct, unremarkable.</td></tr>
+      <tr><td><span class="pill err">No lowering</span></td><td>The code generator has nothing to emit for this operator on this target.</td></tr>
+    </tbody>
+  </table>
+
+  <div class="box warn">
+    <div class="t">Why this stage exists at all</div>
+    A single <b>No lowering</b> row is a stage-05 compile failure waiting to happen. Finding it
+    here costs a second; finding it in stage 05 costs a full code-generation and cross-compile
+    cycle first. If you see one, the usual fixes are to pick a different target, or to re-export
+    the model without the operator in question.
+  </div>
+
+  <h3>Changing the target here</h3>
+  <p>The mapping is model × target, so going back to stage 01 and choosing a different chip
+    produces a different table. That is the intended way to compare two candidate cores before
+    committing to a build.</p>
+</section>
+
+<!-- ============================================================== 04 -->
+<section class="page">
+  <div class="stage-head">
+    <div class="kicker">Stage 04</div>
+    <h2>Optimize — choose the passes</h2>
+    <div class="one-line">Selects the graph rewrites applied before code generation. Nothing is
+      built here; this stage only decides what stage 05 will do.</div>
+  </div>
+
+  <div class="io">
+    <div><div class="k">Needs</div><div class="v">A mapped model. No toolchain.</div></div>
+    <div><div class="k">Produces</div><div class="v">A build plan — the exact configuration stage 05 will compile.</div></div>
+    <div><div class="k">Typical time</div><div class="v">Instant. It is a set of switches.</div></div>
+  </div>
+
+  <h3>Softmax fusion <span class="pill ok">Available</span></h3>
+  <p>Replaces the generic softmax — multiple passes over the data, heap-allocated scratch space —
+    with a stack-allocated single-pass kernel that uses Schraudolph's fast exponential
+    approximation. On the attention pattern stage 02 detects, this removes an entire pass over the
+    attention output. <b>This is the pass the measured improvement comes from.</b> Its output is
+    checked against host ONNX Runtime in stage 05, so the speed-up is not accepted on trust.</p>
+
+  <h3>INT8 quantization <span class="pill warn">Experimental</span></h3>
+  <p>Symmetric QDQ quantization, with activation scales calibrated at the 99.9th percentile. It
+    reduces the binary and the working set — and on a scalar RISC-V core it runs
+    <b>slower</b>, not faster.</p>
+  <div class="box warn">
+    <div class="t">That is a property of the hardware, not a defect</div>
+    None of TATVA's targets have an INT8 dot-product instruction. Every quantized multiply is
+    widened back out in software, so you pay conversion cost for arithmetic that was already
+    cheap. Turn this on when SRAM or flash is the binding constraint, and leave it off when
+    latency is. Stage 05 measures it either way rather than asking you to take this on faith.
+  </div>
+
+  <h3>Describing what you want in plain English <span class="pill warn">Experimental</span></h3>
+  <p>The text box above the pass cards accepts a sentence — <i>"this has to fit in SRAM on a 32-bit
+    MCU"</i>, <i>"lowest latency, accuracy matters"</i> — and sets the same switches you can click
+    yourself. It is a deterministic phrase matcher running offline: no model, no network, no API
+    key, and the same sentence always resolves to the same configuration.</p>
+  <ul>
+    <li>Every change it makes is listed with the phrase that caused it, so you can disagree with it.</li>
+    <li>An explicit instruction beats an inferred priority: <i>"smallest possible, but no quantization"</i> leaves quantization off.</li>
+    <li>Contradictory requests are reported rather than silently resolved: <i>"smallest and fastest"</i> says which one it took and why.</li>
+    <li>Anything it does not recognise is left at your current setting, and it says so instead of returning defaults.</li>
+  </ul>
+
+  <h3>The build plan</h3>
+  <p>The panel at the bottom of the stage shows the exact configuration stage 05 will compile —
+    target, ABI, passes, and the parity tolerance. It is a summary, not a command to run.</p>
+</section>
+
+<!-- ============================================================== 05 -->
+<section class="page">
+  <div class="stage-head">
+    <div class="kicker">Stage 05</div>
+    <h2>Generate — build the binary and measure it</h2>
+    <div class="one-line">Emits C, cross-compiles it for the target, runs it under emulation, and
+      measures the baseline and the optimized build in the same run.</div>
+  </div>
+
+  <div class="io needs-none">
+    <div><div class="k">Needs</div><div class="v">The RISC-V cross-compiler and QEMU. <b>Both are bundled</b> with this build.</div></div>
+    <div><div class="k">Produces</div><div class="v">Two ELF binaries, two latency figures, and a numerical parity check.</div></div>
+    <div><div class="k">Typical time</div><div class="v">Minutes on a first run — two full builds and two emulated runs.</div></div>
+  </div>
+
+  <h3>What happens, in order</h3>
+  <ul>
+    <li><b>Code generation.</b> TVM lowers the graph to C99. The build directory gets
+      <code>operators.c</code>, <code>model_run.c</code>, <code>main.c</code> and
+      <code>model_info.h</code>, plus <code>start.S</code> and the linker script
+      <code>link.ld</code>.</li>
+    <li><b>Cross-compile and link.</b> <code>riscv-none-elf-gcc</code> builds it freestanding —
+      no operating system, no C library startup — producing <code>model.elf</code>.</li>
+    <li><b>Emulated run.</b> QEMU boots the ELF in system mode. The program reads the cycle
+      counter on the target itself with <code>rdcycle</code>/<code>rdcycleh</code>, so the timing
+      is taken inside the machine being measured.</li>
+    <li><b>The same thing again, without the passes,</b> to produce the baseline the optimized
+      build is compared against.</li>
+    <li><b>Parity check.</b> The output is compared against host ONNX Runtime and reported as a
+      mean squared error, with a pass/fail against the tolerance.</li>
+  </ul>
+
+  <pre><span class="c">// how the binary is built and run</span>
+riscv-none-elf-gcc -O2 -march=&lt;target&gt; -mabi=&lt;abi&gt; -mcmodel=medany \
+    -ffreestanding -nostdlib -T link.ld start.S *.c -lm -lgcc -o model.elf
+
+qemu-system-riscv64 -M virt -nographic -icount shift=0 -kernel model.elf</pre>
+
+  <div class="box gold">
+    <div class="t">How to read the latency numbers</div>
+    They are QEMU system-mode cycle counts, converted to milliseconds at a nominal 100&nbsp;MHz.
+    They are <b>emulator cycles, not silicon</b>. Their job is to compare two builds of the same
+    model against each other under identical conditions — which they do faithfully. They are not a
+    prediction of wall-clock time on a specific chip, and should not be quoted as one.
+  </div>
+
+  <h3>A real run, for reference</h3>
+  <p>One complete run on the development machine, using the bundled toolchain with the system
+    <code>PATH</code> scrubbed to confirm nothing outside the app folder was involved:</p>
+  <table>
+    <thead><tr><th>Configuration</th><th class="mono">Mean latency</th><th class="mono">Change</th><th class="mono">Parity MSE</th><th>Verdict</th></tr></thead>
+    <tbody>
+      <tr><td>Baseline — FP32, no passes</td><td class="mono">0.731 ms</td><td class="mono">reference</td><td class="mono">—</td><td><span class="pill ok">Reference</span></td></tr>
+      <tr><td>Optimized — softmax fusion</td><td class="mono">0.665 ms</td><td class="mono">−8.99%</td><td class="mono">2.94e-5</td><td><span class="pill ok">Pass</span></td></tr>
+    </tbody>
+  </table>
+  <p class="small">Whole run: 5.3 s. Your figures will differ with the model, the target and the
+    machine. A run that reports 0.00% is a real result — it means the passes you chose had nothing
+    to change in that particular graph.</p>
+
+  <h3>What can go wrong here</h3>
+  <ul>
+    <li><b>The toolchain is not found.</b> Only possible outside the packaged build; Diagnostics
+      shows the resolved path for each binary and offers to install them.</li>
+    <li><b>An operator had no lowering.</b> Stage 03 would have said so first.</li>
+    <li><b>The parity check fails.</b> The numbers are still shown, flagged as failed. A large MSE
+      with INT8 on is the expected quantization trade-off, not a compiler bug.</li>
+  </ul>
+</section>
+
+<!-- ============================================================== APPENDIX -->
+<section class="page">
+  <div class="stage-head">
+    <div class="kicker">Appendix A</div>
+    <h2>Taking the binary to real hardware</h2>
+    <div class="one-line">What stage 05 hands you, and what has to be true of a board before it
+      will run there.</div>
+  </div>
+
+  <p>TATVA compiles and measures under emulation. It does not flash boards, and asking it for a
+    hardware run returns a message saying so along with the path to the ELF — deliberately, rather
+    than pretending an emulated number came from silicon.</p>
+
+  <h3>What you have after a build</h3>
+  <p>In the stage-05 build directory: <code>model.elf</code>, the linked binary, alongside the
+    generated <code>operators.c</code>, <code>model_run.c</code>, <code>main.c</code>,
+    <code>model_info.h</code>, <code>start.S</code> and <code>link.ld</code>. The C sources are
+    the portable artifact — they are ordinary C99 and can be dropped into an existing firmware
+    project or SDK.</p>
+
+  <h3>What the ELF assumes</h3>
+  <table>
+    <thead><tr><th style="width:120pt">Assumption</th><th>Detail</th></tr></thead>
+    <tbody>
+      <tr><td>Load address</td><td class="mono">0x80200000</td></tr>
+      <tr><td>RAM window</td><td class="mono">128 MB</td></tr>
+      <tr><td>Entry point</td><td class="mono">_start</td></tr>
+      <tr><td>Stack</td><td>64 KB, reserved by the linker script</td></tr>
+      <tr><td>Console output</td><td>SBI ecall — <code>a7=0x01</code> console putchar</td></tr>
+      <tr><td>Shutdown</td><td>SBI system reset — <code>a7=0x53525354</code></td></tr>
+      <tr><td>Timing</td><td><code>rdcycle</code> / <code>rdcycleh</code></td></tr>
+    </tbody>
+  </table>
+
+  <div class="box warn">
+    <div class="t">The load address and SBI are the two things to check first</div>
+    Because the binary talks to the console through SBI rather than by writing UART registers
+    directly, it is an <b>S-mode payload for OpenSBI</b>, not a raw M-mode bare-metal image. It
+    will run unchanged on a board that boots OpenSBI and hands off at
+    <code>0x80200000</code> — which covers most Linux-capable RISC-V SoCs and development boards.
+    A microcontroller-class core with no SBI implementation needs two edits: the
+    <code>MEMORY</code> origin in <code>link.ld</code> changed to that part's RAM base, and the
+    console putchar pointed at its UART.
+  </div>
+
+  <h3>Getting it onto the board</h3>
+  <ul>
+    <li><b>Via a bootloader (most boards).</b> Copy <code>model.elf</code> to SD card or load it
+      over TFTP, and have U-Boot or OpenSBI load it at <code>0x80200000</code> and jump to it.</li>
+    <li><b>Via a debug probe.</b> <code>openocd</code> with your board's config, then
+      <code>load</code> and <code>continue</code> from GDB. Note the bundled toolchain has GDB
+      removed to save space — use your own.</li>
+    <li><b>As source, inside your own firmware.</b> Usually the right answer for a
+      microcontroller: take the generated <code>.c</code> and <code>.h</code> files, drop them into
+      your existing project, and call the entry point from your own <code>main</code>. You keep
+      your linker script, your startup code and your I/O.</li>
+  </ul>
+
+  <h3>What to expect from the numbers</h3>
+  <p>The emulated figure and the silicon figure will not match — QEMU models instruction counts,
+    not caches, memory latency or pipeline behaviour. What does carry across is the
+    <i>direction and rough scale</i> of the difference between two builds, because both were
+    measured the same way. Treat stage 05 as the answer to "did this pass help, and roughly how
+    much", and the board as the answer to "how fast is it actually".</p>
+</section>
+
+<!-- ============================================================== APPENDIX B -->
+<section class="page">
+  <div class="stage-head">
+    <div class="kicker">Appendix B</div>
+    <h2>Reference</h2>
+  </div>
+
+  <h3>The same pipeline from the command line</h3>
+  <p>The desktop app and the CLI share one implementation. These are the commands that exist:</p>
+  <table>
+    <thead><tr><th class="mono" style="width:96pt">Command</th><th>Does</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">tatva doctor</td><td>Toolchain health check — the same one the Diagnostics page runs.</td></tr>
+      <tr><td class="mono">tatva setup</td><td>Downloads and installs the RISC-V toolchain. Not needed in the packaged build.</td></tr>
+      <tr><td class="mono">tatva targets</td><td>Lists the RISC-V targets the code generator accepts.</td></tr>
+      <tr><td class="mono">tatva analyze</td><td>Stage 02 — graph and operator analysis.</td></tr>
+      <tr><td class="mono">tatva baseline-test</td><td>Builds and measures the unoptimized baseline.</td></tr>
+      <tr><td class="mono">tatva optimize</td><td>Stages 04–05 — apply passes, build, measure both.</td></tr>
+      <tr><td class="mono">tatva diagnose</td><td>Explains a failure in plain English.</td></tr>
+      <tr><td class="mono">tatva validate</td><td>Numerical parity against host ONNX Runtime.</td></tr>
+      <tr><td class="mono">tatva gui</td><td>Opens the desktop app.</td></tr>
+    </tbody>
+  </table>
+  <p class="small">There is no <code>tatva compile</code>. The <code>$ tatva compile …</code> line
+    shown in the stage-05 console is a summary of the configuration being built, not a command to
+    type.</p>
+
+  <h3>Where the toolchain comes from</h3>
+  <p>TATVA looks for <code>riscv-none-elf-gcc</code> and <code>qemu-system-riscv64</code> in this
+    order, and Diagnostics shows which copy it resolved:</p>
+  <ul>
+    <li>Your <code>PATH</code> — if you have your own, it wins.</li>
+    <li>The per-user tools directory (<code>%LOCALAPPDATA%\tatva\toolchains</code>).</li>
+    <li>The <code>toolchain/</code> folder shipped beside the app. <b>This is the one the packaged
+      build uses</b>, and it is why stage 05 works on a machine with nothing installed.</li>
+  </ul>
+
+  <h3>What this build can and cannot do</h3>
+  <table>
+    <thead><tr><th style="width:80pt">Status</th><th>Features</th></tr></thead>
+    <tbody>
+      <tr><td><span class="pill ok">Available</span></td><td>ONNX input · graph and operator analysis · softmax fusion · RV32IMC–RV64GC cross-compilation · QEMU system-mode validation · desktop app in light and dark</td></tr>
+      <tr><td><span class="pill warn">Experimental</span></td><td>INT8 quantization · plain-English diagnostics · natural-language configuration · assistant and project scaffolding</td></tr>
+      <tr><td><span class="pill">Roadmap</span></td><td>Vector and matrix extensions · wider operator coverage · Renode validation · more boards and cores · hosted service</td></tr>
+    </tbody>
+  </table>
+  <p class="small">Experimental means it works but is not yet trustworthy for a production
+    decision. Roadmap means it is not in this build at all.</p>
+
+  <div class="box" style="margin-top:16pt">
+    <div class="t">One rule this project holds to</div>
+    Every performance figure shown anywhere in TATVA comes from a measurement that actually ran.
+    Nothing is estimated, extrapolated or rounded up, and a stage that produced no measurement
+    leaves its report page empty rather than filling it with a placeholder.
+  </div>
+</section>
+
+</body>
+</html>

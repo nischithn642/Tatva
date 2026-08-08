@@ -13,7 +13,7 @@ reference; this is the walkthrough.
 
 | You have | Start here | Time to first result |
 | :--- | :--- | :--- |
-| `TATVA-beta-2.0-windows.zip` | [The app](#the-app) | ~5 minutes, plus a download |
+| `TATVA-beta-2.0-windows.zip` | [The app](#the-app) | ~5 minutes, nothing to download |
 | Python 3.12 or 3.13 and a terminal | [The CLI](#the-cli) | ~10 minutes |
 | A clone of this repository | [From source](#from-source) | ~15 minutes |
 
@@ -28,8 +28,9 @@ prerequisite for the other.
 
 Unzip the folder anywhere and double-click **`TATVA.exe`**.
 
-Keep the folder together — the exe is not standalone, it loads the `_internal` directory
-next to it. Moving `TATVA.exe` out on its own will stop it working.
+Keep the folder together — the exe is not standalone. It loads `_internal/` for the
+compiler backend and `toolchain/` for the RISC-V cross-compiler, both of which sit beside
+it. Moving `TATVA.exe` out on its own will stop it working.
 
 Two things to expect on first launch:
 
@@ -39,29 +40,23 @@ Two things to expect on first launch:
 - **A splash screen for a few seconds** while Apache TVM loads. This is the slowest part
   of startup and it only happens once per launch.
 
-### 2. Install the RISC-V toolchain
+### 2. Check the toolchain — it is already there
 
-Stages 01–04 work the moment you unzip. Stage 05 shells out to a cross-compiler and an
-emulator, so it needs both present.
+All five stages work on a freshly unzipped folder. There is nothing to install and
+nothing to download.
 
-They are not in the zip — together they are about 520 MB and licensed separately, which
-would more than quadruple the download for everyone who already has them.
+Stage 05 shells out to a RISC-V cross-compiler and an emulator, and both ship inside the
+zip, in the `toolchain/` folder beside `TATVA.exe`. They are the pinned xPack builds of
+`riscv-none-elf-gcc` and `qemu-system-riscv64`, trimmed to the six targets TATVA can emit
+code for. No admin rights, nothing added to `PATH`, nothing written outside the folder.
 
-Get them from inside the app:
+The bottom-left of the sidebar reads **Toolchain ready** or **Toolchain not installed**.
+On an unpacked zip it should say ready before you touch anything. If it doesn't, the
+`toolchain/` folder has been separated from `TATVA.exe` — put them back together.
 
-> **Diagnostics → Install the RISC-V toolchain**
-
-The card lists every URL and the destination before you press anything. It downloads
-pinned xPack builds of `riscv-none-elf-gcc` and `qemu-system-riscv64` into
-`%LOCALAPPDATA%\tatva\toolchains`, then re-checks. No admin rights. Nothing is added to
-`PATH`. Nothing else on the machine changes.
-
-If you already have either tool on your `PATH`, TATVA uses that one and you can skip
-this — the Diagnostics page shows the resolved path for each, so you can confirm which
-binary it picked.
-
-The bottom-left of the sidebar reads **Toolchain ready** or **Toolchain not installed**
-at all times. Check it before you start rather than after.
+If you already have your own `riscv-none-elf-gcc` or `qemu-system-riscv64` on `PATH`,
+TATVA prefers yours over the bundled copy. **Diagnostics** shows the resolved path for
+each, so you can see which binary it actually picked.
 
 ### 3. Walk the five stages
 
@@ -198,9 +193,13 @@ does not cross-compile — build on the OS you are shipping to.
 ## When it doesn't work
 
 **"RISC-V GCC cross-compiler binary not found" / "emulator binary not found"**
-The toolchain is missing. Open **Diagnostics → Install the RISC-V toolchain**, or run
-`tatva setup`. From Beta 2.0 onward stage 05 checks for both binaries before it starts
-and shows this as a banner with an install button rather than failing mid-build.
+In the app, this means the `toolchain/` folder is no longer next to `TATVA.exe` — most
+often because the exe was dragged out of the unzipped folder on its own. Put it back;
+`TATVA.exe` is not standalone and needs both `_internal/` and `toolchain/` beside it.
+
+From a source checkout or a pip install there is no bundled copy, so run `tatva setup`
+(or **Diagnostics → Install the RISC-V toolchain**) to fetch it once into
+`%LOCALAPPDATA%\tatva\toolchains`.
 
 Note that a `riscv64-linux-gnu-gcc` — the common apt/WSL/MSYS2 package — does not count.
 It targets Linux userspace, and TATVA links bare metal (`-ffreestanding -nostdlib`)
@@ -225,8 +224,8 @@ Nothing has been measured yet. The page deliberately stays blank rather than sho
 placeholder number. Complete a stage 05 run first.
 
 **The app won't start, or closes immediately**
-Check that `TATVA.exe` still sits beside its `_internal` folder. If it does, run
-`tatva doctor` from a source install for a readable diagnosis.
+Check that `TATVA.exe` still sits beside its `_internal` and `toolchain` folders. If it
+does, run `tatva doctor` from a source install for a readable diagnosis.
 
 ---
 

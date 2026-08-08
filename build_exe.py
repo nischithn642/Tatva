@@ -19,10 +19,12 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import glob
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import zipfile
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -81,6 +83,248 @@ def tree_size(path: str) -> int:
     return total
 
 
+# --- Bundling the RISC-V toolchain -------------------------------------------------
+#
+# Stage 05 is the only stage that produces a measurement, and it was the only stage that
+# did not work on a freshly unzipped copy: it shells out to a cross-compiler and an
+# emulator that the user had to go and download first. So the toolchain now ships inside
+# the app folder, and the zip is self-sufficient.
+#
+# The layout under toolchain/ matches the per-user install directory exactly, so
+# tatva.runner searches both with the same code.
+
+TOOLCHAIN_DIR = os.path.join(APP_DIR, "toolchain")
+
+# (directory name under toolchain/, directory name in a git checkout, probe executable)
+BUNDLED_COMPONENTS = (
+    ("riscv-none-elf-gcc", "riscv-toolchain", "riscv-none-elf-gcc.exe"),
+    ("qemu-riscv", "qemu", "qemu-system-riscv64.exe"),
+)
+
+# Dropped from the cross-compiler before it ships. Every entry is either a language TATVA
+# does not compile or a tool it never invokes -- the source contains no reference to gdb,
+# g++, gfortran or -flto, so nothing here can be reached at runtime. gdb is what drags in
+# the embedded CPython (DLLs/, python313.*), which is why removing it saves more than its
+# own size.
+GCC_DROP = (
+    "share",  # man pages, info files, HTML manuals
+    "bin/riscv-none-elf-lto-dump.exe",
+    "bin/riscv-none-elf-gdb.exe",
+    "bin/riscv-none-elf-gdb-py3.exe",
+    "bin/riscv-none-elf-gdb-add-index",
+    "bin/riscv-none-elf-gdb-add-index-py3",
+    "bin/riscv-none-elf-gstack",
+    "bin/riscv-none-elf-gstack-py3",
+    "bin/riscv-none-elf-gfortran.exe",
+    "bin/riscv-none-elf-g++.exe",
+    "bin/riscv-none-elf-c++.exe",
+    "bin/DLLs",
+    "bin/python313.dll",
+    "bin/python313.zip",
+)
+
+# The C++ and Fortran compiler proper. cc1 (C) and lto-wrapper stay.
+GCC_DROP_GLOBS = (
+    "libexec/gcc/riscv-none-elf/*/cc1plus.exe",
+    "libexec/gcc/riscv-none-elf/*/f951.exe",
+)
+
+# QEMU ships firmware for every machine type it supports. TATVA runs `-M virt -nographic
+# -kernel`, which needs one OpenSBI blob and nothing else -- no UEFI (the edk2-*.fd files
+# are ~290 MB on their own), no VGA BIOS, no OpenBIOS for other architectures.
+QEMU_SHARE_KEEP = (
+    "opensbi-riscv32-generic-fw_dynamic.bin",
+    "opensbi-riscv64-generic-fw_dynamic.bin",
+    "keymaps",
+)
+
+
+def _rm(path: str) -> int:
+    """Delete a file or directory, returning the bytes reclaimed."""
+    if not os.path.exists(path):
+        return 0
+    size = tree_size(path) if os.path.isdir(path) else os.path.getsize(path)
+    if os.path.isdir(path):
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        with contextlib.suppress(OSError):
+            os.remove(path)
+    return size
+
+
+def find_component(checkout_dir: str, install_name: str, probe: str) -> str | None:
+    """
+    Locate an installed copy of a component to bundle.
+
+    A git checkout that ran the old setup_env.py has one at `<repo>/<checkout_dir>`;
+    anything that ran `tatva setup` has one in the per-user tools directory. Either will
+    do -- they are the same pinned xPack builds.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "src"))
+    candidates = [os.path.join(ROOT, checkout_dir)]
+    try:
+        from tatva.toolchain import tools_dir
+
+        candidates.append(os.path.join(tools_dir(), install_name))
+    except Exception:
+        pass
+
+    for root in candidates:
+        if os.path.isfile(os.path.join(root, "bin", probe)):
+            return root
+    return None
+
+
+def needed_multilibs(gcc_exe: str) -> set[str]:
+    """
+    The multilib directories that TATVA's targets actually select.
+
+    Asked of GCC rather than hardcoded: `-print-multi-directory` is the same lookup the
+    compiler performs when it links, so this cannot drift from what the build needs. The
+    toolchain carries 32 variants and the six targets in compiler.TARGETS resolve to four
+    of them, which is where most of the cross-compiler's gigabyte goes.
+
+    Returns the top-level directory names, plus "." for the default variant, whose
+    libraries sit loose in the parent directory.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "src"))
+    from tatva.compiler import TARGETS
+
+    keep = set()
+    for variant in TARGETS.values():
+        result = subprocess.run(
+            [gcc_exe, f"-march={variant.gcc_march}", f"-mabi={variant.gcc_mabi}", "-print-multi-directory"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            sys.exit(
+                f"Could not ask GCC which multilib {variant.name} uses:\n{result.stderr.strip()}\n"
+                "Refusing to guess -- a wrong answer here ships a toolchain that cannot link."
+            )
+        keep.add(result.stdout.strip().split("/")[0])
+    return keep
+
+
+def prune_gcc(root: str) -> int:
+    """Strip the cross-compiler down to what TATVA's six targets need. Returns bytes saved."""
+    saved = 0
+    for rel in GCC_DROP:
+        saved += _rm(os.path.join(root, rel.replace("/", os.sep)))
+    for pattern in GCC_DROP_GLOBS:
+        for path in glob.glob(os.path.join(root, pattern.replace("/", os.sep))):
+            saved += _rm(path)
+
+    keep = needed_multilibs(os.path.join(root, "bin", "riscv-none-elf-gcc.exe"))
+    print(f"  multilibs kept: {', '.join(sorted(keep))}")
+
+    # The two trees that carry a copy of the runtime per ISA variant.
+    parents = [os.path.join(root, "riscv-none-elf", "lib")]
+    parents += glob.glob(os.path.join(root, "lib", "gcc", "riscv-none-elf", "*"))
+
+    for parent in parents:
+        if not os.path.isdir(parent):
+            continue
+        for entry in os.listdir(parent):
+            # Only ISA-named directories are candidates. ldscripts/, include/, plugin/ and
+            # the loose .a and .o files belong to the default variant and always stay.
+            if entry.startswith("rv") and entry not in keep and os.path.isdir(os.path.join(parent, entry)):
+                saved += _rm(os.path.join(parent, entry))
+    return saved
+
+
+def prune_qemu(root: str) -> int:
+    """Drop the firmware for machine types TATVA never boots. Returns bytes saved."""
+    share = os.path.join(root, "share")
+    if not os.path.isdir(share):
+        return 0
+    saved = 0
+    for entry in os.listdir(share):
+        if entry not in QEMU_SHARE_KEEP:
+            saved += _rm(os.path.join(share, entry))
+    return saved
+
+
+def stage_toolchain() -> None:
+    """Copy the cross-compiler and QEMU into the app folder, pruned to what is used."""
+    if os.path.isdir(TOOLCHAIN_DIR):
+        shutil.rmtree(TOOLCHAIN_DIR, ignore_errors=True)
+    os.makedirs(TOOLCHAIN_DIR, exist_ok=True)
+
+    print("\nBundling the RISC-V toolchain…")
+    for install_name, checkout_dir, probe in BUNDLED_COMPONENTS:
+        source = find_component(checkout_dir, install_name, probe)
+        if source is None:
+            sys.exit(
+                f"No copy of {install_name} found to bundle.\n"
+                f"  looked in: {os.path.join(ROOT, checkout_dir)}\n"
+                f"             the per-user tools directory\n"
+                "Run `tatva setup` first, then build again. Shipping without it would put\n"
+                "the download back in front of whoever receives the zip."
+            )
+
+        dest = os.path.join(TOOLCHAIN_DIR, install_name)
+        print(f"  {install_name} <- {source}")
+        shutil.copytree(source, dest, symlinks=True)
+
+        before = tree_size(dest)
+        saved = prune_gcc(dest) if install_name == "riscv-none-elf-gcc" else prune_qemu(dest)
+        print(f"    {human(before)} -> {human(before - saved)}  (dropped {human(saved)})")
+
+
+def verify_bundle() -> None:
+    """
+    Compile and link a bare-metal object for every target, using only the bundled copy.
+
+    This runs the real compiler out of the folder that is about to be zipped. A pruned
+    toolchain that is missing one multilib fails here rather than on someone else's
+    laptop, halfway through the only stage that produces a number.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "src"))
+    from tatva.compiler import TARGETS
+
+    gcc = os.path.join(TOOLCHAIN_DIR, "riscv-none-elf-gcc", "bin", "riscv-none-elf-gcc.exe")
+    print("\nVerifying the bundled compiler against every target…")
+
+
+    with tempfile.TemporaryDirectory(prefix="tatva-bundle-check-") as tmp:
+        src = os.path.join(tmp, "probe.c")
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write("int main(void){return 0;}\n")
+
+        failures = []
+        for name, variant in TARGETS.items():
+            out = os.path.join(tmp, f"{name}.o")
+            result = subprocess.run(
+                [
+                    gcc,
+                    f"-march={variant.gcc_march}",
+                    f"-mabi={variant.gcc_mabi}",
+                    "-ffreestanding",
+                    "-nostdlib",
+                    "-c",
+                    src,
+                    "-o",
+                    out,
+                ],
+                capture_output=True,
+                text=True,
+            )
+            ok = result.returncode == 0 and os.path.exists(out)
+            print(f"  {'ok  ' if ok else 'FAIL'} {name:<12} {variant.gcc_march}/{variant.gcc_mabi}")
+            if not ok:
+                failures.append(f"{name}: {result.stderr.strip()}")
+
+        if failures:
+            sys.exit("The bundled toolchain cannot build every target:\n  " + "\n  ".join(failures))
+
+    qemu = os.path.join(TOOLCHAIN_DIR, "qemu-riscv", "bin", "qemu-system-riscv64.exe")
+    result = subprocess.run([qemu, "-version"], capture_output=True, text=True)
+    if result.returncode != 0:
+        sys.exit(f"The bundled QEMU does not run:\n{result.stderr.strip()}")
+    print(f"  ok   qemu         {result.stdout.splitlines()[0].strip()}")
+
+
 def build() -> None:
     if shutil.which("pyinstaller") is None:
         try:
@@ -131,34 +375,30 @@ THE FIVE STAGES
   04 OPTIMIZE   choose the passes: softmax fusion, INT8 quantization
   05 GENERATE   emit C99, cross-compile, run under QEMU, measure both builds
 
-Stages 01-04 work the moment you unzip this. Stage 05 shells out to a RISC-V
-cross-compiler and QEMU, so it needs them present -- see below.
+All five work the moment you unzip this. There is nothing else to install.
 
 
 THE RISC-V TOOLCHAIN
 --------------------
-Not bundled: the two archives together are about half a gigabyte and licensed
-separately.
+Bundled, in the toolchain/ folder next to this file: the pinned xPack builds of
+riscv-none-elf-gcc and qemu-system-riscv64, trimmed to the six targets TATVA can
+actually emit code for.
 
-Get them from inside the app:
+No download, no admin rights, nothing added to PATH, nothing written outside
+this folder. Keep toolchain/ where it is and stage 05 works offline.
 
-  Diagnostics  ->  Install toolchain
-
-That downloads the pinned xPack builds (riscv-none-elf-gcc and
-qemu-system-riscv64), unpacks them into your own user folder, and re-checks.
-No admin rights. Nothing is added to PATH. Nothing else on the machine changes.
-
-If you already have your own build of either tool on PATH, TATVA uses that and
-the install step is unnecessary.
+If you already have your own riscv-none-elf-gcc or qemu-system-riscv64 on PATH,
+TATVA uses yours in preference to the bundled copy. Diagnostics shows the
+resolved path for each, so you can see which one it picked.
 
 
 EVERYTHING RUNS LOCALLY
 -----------------------
-No account, no upload, no telemetry. Models never leave this machine.
+No account, no upload, no telemetry, no network. Models never leave this
+machine, and a completed run needs no connection at any point.
 
-Two exceptions, both opt-in and both obvious when they happen: pressing "Install
-toolchain" downloads from the xPack project's GitHub releases, and the optional
-Assistant talks to whichever LLM provider you configure yourself.
+One exception, and it is opt-in: the optional Assistant talks to whichever LLM
+provider you configure yourself. Leave it alone and nothing goes out.
 
 
 MEASUREMENT
@@ -210,21 +450,44 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Build and package TATVA.exe")
     ap.add_argument("--no-zip", action="store_true", help="build the exe but do not zip it")
     ap.add_argument("--zip-only", action="store_true", help="zip an existing dist/TATVA")
+    ap.add_argument(
+        "--skip-toolchain",
+        action="store_true",
+        help="do not bundle the RISC-V toolchain (stage 05 will then need `tatva setup`)",
+    )
     args = ap.parse_args()
 
     if not args.zip_only:
         build()
 
+    if args.skip_toolchain:
+        print("\nSkipping the toolchain bundle (--skip-toolchain).")
+        print("Whoever receives this will have to install it before stage 05 runs.")
+    elif args.zip_only and os.path.isdir(TOOLCHAIN_DIR):
+        print(f"\nReusing the staged toolchain in {TOOLCHAIN_DIR}.")
+        verify_bundle()
+    else:
+        stage_toolchain()
+        verify_bundle()
+
+    toolchain_bytes = tree_size(TOOLCHAIN_DIR) if os.path.isdir(TOOLCHAIN_DIR) else 0
+    total_bytes = tree_size(APP_DIR)
+
     print("\n" + "=" * 62)
-    print(f"  exe     {EXE_PATH}")
-    print(f"  folder  {human(tree_size(APP_DIR))}")
+    print(f"  exe        {EXE_PATH}")
+    print(f"  app        {human(total_bytes - toolchain_bytes)}")
+    if toolchain_bytes:
+        print(f"  toolchain  {human(toolchain_bytes)}")
+    print(f"  folder     {human(total_bytes)}")
 
     if not args.no_zip:
         zip_path = make_zip()
-        print(f"  zip     {zip_path}")
-        print(f"          {human(os.path.getsize(zip_path))}")
+        print(f"  zip        {zip_path}")
+        print(f"             {human(os.path.getsize(zip_path))}")
     print("=" * 62)
     print("\nSend the zip. The person who receives it unzips it and runs TATVA.exe.")
+    if toolchain_bytes:
+        print("Nothing else to install — all five stages work offline.")
 
 
 if __name__ == "__main__":
