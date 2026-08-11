@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>TATVA — Why It Can't Flash a Real Board Yet</title>
+<!--
+  Print source for TATVA-Hardware-Gap.pdf. One A4 page, deliberately.
+
+  Rendered with:  msedge.exe --headless --print-to-pdf=... --no-pdf-header-footer
+  Regenerate with: python tools/make_hardware_gap.py
+
+  Same visual language as docs/stage-guide.html: gold rule, greyscale-safe, no colour
+  that stops meaning anything when printed in black and white. Every file reference
+  points at a real line in src/tatva/.
+-->
+<style>
+  @page { size: A4; margin: 12mm 13mm 10mm; }
+
+  :root {
+    --gold: #A9761F;
+    --gold-soft: #FBF3E4;
+    --ink: #16161A;
+    --ink-2: #4A4A55;
+    --ink-3: #7C7C88;
+    --line: #DCDCD6;
+    --ok: #1D7A45;
+    --err: #B3261E;
+    --mono: "Cascadia Mono", Consolas, "Courier New", monospace;
+    --sans: "Segoe UI", Calibri, Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: var(--sans);
+    font-size: 8.6pt;
+    line-height: 1.35;
+    color: var(--ink);
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  h1, h2, h3 { margin: 0; font-weight: 700; letter-spacing: -0.01em; }
+  p { margin: 0; }
+  code { font-family: var(--mono); font-size: 8pt; color: var(--ink-3); }
+
+  /* ------------------------------------------------------------- header */
+  .rule { height: 2.5pt; width: 56pt; background: var(--gold); border-radius: 2pt; margin-bottom: 7pt; }
+  .kicker { font-family: var(--mono); font-size: 7.2pt; font-weight: 700; letter-spacing: 0.14em;
+            text-transform: uppercase; color: var(--gold); margin-bottom: 3pt; }
+  h1 { font-size: 18pt; line-height: 1.08; }
+  .lede { font-size: 9.2pt; color: var(--ink-2); margin-top: 4pt; max-width: 150mm; }
+
+  /* ------------------------------------------------------------ callout */
+  .callout {
+    margin: 9pt 0 10pt;
+    background: var(--gold-soft);
+    border-left: 3pt solid var(--gold);
+    border-radius: 0 5pt 5pt 0;
+    padding: 7pt 10pt;
+  }
+  .callout .k { font-size: 7.2pt; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+                color: var(--gold); margin-bottom: 2pt; }
+  .callout p { font-size: 9.2pt; line-height: 1.38; }
+
+  /* ------------------------------------------------------- section head */
+  h2 { font-size: 7.6pt; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-3);
+       border-bottom: 1pt solid var(--line); padding-bottom: 2.5pt; margin-bottom: 6pt; }
+
+  /* -------------------------------------------------------------- cards */
+  .grid { display: flex; flex-wrap: wrap; gap: 6pt; margin-bottom: 10pt; }
+  .card { flex: 0 0 calc((100% - 12pt) / 3); border: 1pt solid var(--line); border-radius: 5pt;
+          padding: 6pt 7pt 5pt; }
+  .card .no { font-family: var(--mono); font-size: 7.4pt; font-weight: 700; color: var(--gold); }
+  .card h3 { font-size: 8.8pt; margin: 1pt 0 2pt; line-height: 1.22; }
+  .card p { font-size: 8pt; line-height: 1.33; color: var(--ink-2); }
+  .card .ref { display: block; margin-top: 3pt; font-family: var(--mono); font-size: 6.9pt; color: var(--ink-3); }
+
+  /* ---------------------------------------------------------- size bars */
+  .sizebox { border: 1pt solid var(--line); border-radius: 5pt; padding: 8pt 10pt; margin-bottom: 10pt; }
+  .bar-row { display: flex; align-items: center; gap: 8pt; margin-bottom: 4pt; }
+  .bar-row:last-of-type { margin-bottom: 0; }
+  .bar-lbl { flex: 0 0 46mm; font-size: 8.2pt; }
+  .bar-track { flex: 1; height: 11pt; background: #F1F1EE; border-radius: 3pt; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 3pt; }
+  .bar-need { width: 100%; background: var(--err); }
+  .bar-have { width: 1.5%; background: var(--ok); min-width: 2pt; }
+  .bar-val { flex: 0 0 24mm; text-align: right; font-family: var(--mono); font-size: 8.4pt; font-weight: 700; }
+  .sizenote { font-size: 7.8pt; color: var(--ink-3); margin-top: 6pt; line-height: 1.36; }
+
+  /* --------------------------------------------------------- two paths */
+  .paths { display: flex; gap: 8pt; }
+  .path { flex: 1; border: 1pt solid var(--line); border-radius: 5pt; padding: 7pt 9pt;
+          display: flex; flex-direction: column; }
+  .path.easy { border-left: 2.5pt solid var(--ok); }
+  .path.hard { border-left: 2.5pt solid var(--gold); }
+  .path .tag { font-size: 7pt; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase;
+               color: var(--ink-3); }
+  .path h3 { font-size: 9.4pt; margin: 1pt 0 3pt; }
+  .path p { font-size: 8pt; color: var(--ink-2); line-height: 1.36; }
+  .path ol { margin: 3pt 0 0; padding-left: 12pt; }
+  .path li { font-size: 8pt; color: var(--ink-2); line-height: 1.32; margin-bottom: 1pt; }
+  /* margin-top:auto pins both verdicts to the bottom of their card, so the two
+     columns finish level even though Path B has more to say. */
+  .verdict { margin-top: auto; padding-top: 5pt; border-top: 1pt dotted var(--line);
+             font-size: 8.2pt; font-weight: 700; }
+  .verdict.ok { color: var(--ok); }
+  .verdict.warn { color: var(--gold); }
+
+  /* ------------------------------------------------------------- footer */
+  .foot { margin-top: 9pt; border-top: 1pt solid var(--line); padding-top: 5pt;
+          display: flex; justify-content: space-between; font-size: 7.4pt; color: var(--ink-3); }
+</style>
+</head>
+<body>
+
+  <div class="rule"></div>
+  <div class="kicker">TATVA &nbsp;/&nbsp; Hardware Deployment</div>
+  <h1>Why it can't flash a real RISC-V board yet</h1>
+  <p class="lede">TATVA compiles an ONNX model into a working RISC-V program. It just can't put that
+  program on a physical board — and the reason is not one missing button.</p>
+
+  <div class="callout">
+    <div class="k">The one-sentence answer</div>
+    <p>TATVA doesn't emit generic RISC-V code — it emits code built for <strong>QEMU's virtual
+    machine</strong>, which quietly supplies four things a real board does not: fixed memory
+    addresses, firmware to print through, pre-zeroed memory, and 128&nbsp;MB of RAM.</p>
+  </div>
+
+  <h2>The six blockers</h2>
+  <div class="grid">
+
+    <div class="card">
+      <div class="no">01</div>
+      <h3>The feature was never written</h3>
+      <p><code>REAL_HW</code> exists as a name, but the function behind it just raises an error. There
+      is no flashing tool in the project at all — no OpenOCD, no serial library.</p>
+      <span class="ref">runner.py:1413</span>
+    </div>
+
+    <div class="card">
+      <div class="no">02</div>
+      <h3>The addresses are QEMU's</h3>
+      <p>Memory is hardcoded to one block at <code>0x80200000</code>. Every real board differs, and
+      there is no split between flash and RAM — a distinction real boards depend on.</p>
+      <span class="ref">runner.py:124</span>
+    </div>
+
+    <div class="card">
+      <div class="no">03</div>
+      <h3>Printing needs absent firmware</h3>
+      <p>Every message goes through firmware called OpenSBI. QEMU boots it for you; a small board has
+      none, so it hangs on the first line it tries to print.</p>
+      <span class="ref">runner.py:241</span>
+    </div>
+
+    <div class="card">
+      <div class="no">04</div>
+      <h3>Startup skips the real work</h3>
+      <p>Two instructions, then <code>main</code>. Real hardware also needs blank memory zeroed, data
+      copied out of flash, and the floating-point unit switched on.</p>
+      <span class="ref">runner.py:115</span>
+    </div>
+
+    <div class="card">
+      <div class="no">05</div>
+      <h3>The model is far too big</h3>
+      <p>A built BERT-tiny needs ~21&nbsp;MB of RAM. Most of it is avoidable: weights are written
+      without <code>const</code>, so they land in RAM instead of flash.</p>
+      <span class="ref">runner.py:1062</span>
+    </div>
+
+    <div class="card">
+      <div class="no">06</div>
+      <h3>The timings wouldn't carry</h3>
+      <p>Cycles are converted to milliseconds assuming a 100&nbsp;MHz clock, written into the code.
+      Real boards run at 144, 160, 320&nbsp;MHz or more.</p>
+      <span class="ref">runner.py:1458</span>
+    </div>
+
+  </div>
+
+  <h2>Blocker 05, to scale — measured from a real build</h2>
+  <div class="sizebox">
+    <div class="bar-row">
+      <div class="bar-lbl">RAM the compiled model needs</div>
+      <div class="bar-track"><div class="bar-fill bar-need"></div></div>
+      <div class="bar-val">21 MB</div>
+    </div>
+    <div class="bar-row">
+      <div class="bar-lbl">RAM a large microcontroller has</div>
+      <div class="bar-track"><div class="bar-fill bar-have"></div></div>
+      <div class="bar-val">0.3 MB</div>
+    </div>
+    <p class="sizenote"><strong>17.5&nbsp;MB of that is model weights sitting in RAM</strong> that never
+    change and belong in flash — one missing <code>const</code> keyword. A further 3.4&nbsp;MB is scratch
+    space fixed at a constant size no matter how small the model is. The program code itself is only
+    115&nbsp;KB.</p>
+  </div>
+
+  <h2>What it would take</h2>
+  <div class="paths">
+
+    <div class="path easy">
+      <div class="tag">Path A</div>
+      <h3>A Linux board</h3>
+      <p>VisionFive&nbsp;2, Milk-V, LicheePi, K230. These already run the firmware TATVA expects and have
+      gigabytes of RAM, so five of the six blockers simply vanish.</p>
+      <p style="margin-top:4pt">Stop building bare-metal: compile a normal Linux program, swap the
+      firmware printing for <code>printf</code>, drop the startup code, copy it over SSH and run it. The
+      output format needs no changes.</p>
+      <div class="verdict ok">≈ 1 day to a real silicon measurement</div>
+    </div>
+
+    <div class="path hard">
+      <div class="tag">Path B</div>
+      <h3>A microcontroller board</h3>
+      <p>ESP32-C3, CH32V307, HiFive1. Needs the board abstraction the project is missing:</p>
+      <ol>
+        <li>Fix the startup code and mark weights <code>const</code> — both are bugs today.</li>
+        <li>Add a <code>BoardProfile</code>: addresses, clock, how it prints, how it flashes.</li>
+        <li>Make the memory layout and the printing swappable per board.</li>
+        <li>Size memory from the actual model; refuse to flash when it won't fit.</li>
+        <li>Add <code>tatva flash</code> — program the board, read the serial port.</li>
+      </ol>
+      <div class="verdict warn">Real work, but it unlocks every board at once</div>
+    </div>
+
+  </div>
+
+  <div class="foot">
+    <span>Two of these are bugs on QEMU today: blank memory is never zeroed, and the weights are missing <code>const</code>.</span>
+    <span>Full detail: docs/HARDWARE_GAP.md</span>
+  </div>
+
+</body>
+</html>
