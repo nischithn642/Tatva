@@ -71,6 +71,22 @@
       <p class="nav-head">Compile Pipeline</p>
       <div class="nav-group" id="nav-stages"><!-- built by studio.js from STAGES --></div>
 
+      <p class="nav-head">Results</p>
+      <div class="nav-group">
+        <button class="nav-item" id="nav-artifacts" data-view="artifacts">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-box"/></svg>
+          Generated Artifacts
+        </button>
+        <button class="nav-item" id="nav-validation" data-view="validation">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg>
+          Validation
+        </button>
+        <button class="nav-item" id="nav-evidence" data-view="evidence">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-book"/></svg>
+          Engineering Evidence
+        </button>
+      </div>
+
       <p class="nav-head">Tools</p>
       <div class="nav-group">
         <button class="nav-item" id="nav-report" data-view="report">
@@ -248,6 +264,38 @@
               <div class="stat"><div class="k">Operators</div><div class="v" id="s1-ops">—</div><div class="n">in the ONNX graph</div></div>
               <div class="stat"><div class="k">SHA-256</div><div class="v" style="font-size:13px" id="s1-hash">—</div><div class="n">first 12 hex digits</div></div>
             </div>
+
+            <!-- Read out of the file itself by the frontend adapter, not guessed from the
+                 filename. The family line says which evidence it used, so a wrong guess is
+                 arguable rather than mysterious. -->
+            <div class="hidden mt" id="s1-detail">
+              <div class="table-wrap">
+                <table>
+                  <thead><tr><th style="width:190px">Property</th><th>Read from the model</th></tr></thead>
+                  <tbody id="s1-detail-table"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- §17-§18: the format list is the adapter registry, rendered. A format is listed
+             as available only when its importer is installed in this Python environment --
+             the check runs at load time, so an uninstalled converter reads "not available"
+             here instead of failing three stages later. -->
+        <div class="card">
+          <h2>Model formats TATVA can import</h2>
+          <p class="sub">Read from the frontend registry in this install. Availability is checked against
+            the packages actually importable here, not against a list of formats we would like to support.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th style="width:150px">Format</th><th style="width:130px">Status</th><th>What it means</th></tr></thead>
+              <tbody id="s1-formats"></tbody>
+            </table>
+          </div>
+          <div class="footnote mt">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><use href="#i-info"/></svg>
+            <span id="s1-formats-note">—</span>
           </div>
         </div>
 
@@ -362,13 +410,62 @@
 
             <div id="s3-warnings" class="stack mt"></div>
 
-            <h2 style="margin-top:20px">Operator → lowering</h2>
-            <p class="sub">What the code generator will emit for each operator on <span class="mono" id="s3-target">—</span>.</p>
+            <!-- §5: the diagnostic. Shown only when something is unmapped, and it names
+                 the operators rather than counting them, because "3 unsupported ops" is
+                 not something anyone can act on. The button appears only when the repair
+                 engine actually has a rule for at least one of them. -->
+            <div class="notice warn hidden mt" id="s3-fix-offer">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-alert"/></svg>
+              <span>
+                <span id="s3-fix-text"></span>
+                <button class="btn small" id="btn-autofix" style="margin-left:8px">Attempt Auto-Fix</button>
+              </span>
+            </div>
+
+            <div class="hidden mt" id="s3-fix-result"></div>
+
+            <h2 style="margin-top:20px">Operator diagnostics</h2>
+            <p class="sub">Every operator in the graph against <span class="mono" id="s3-target">—</span>: whether it maps,
+              how it will be lowered, and — when it does not map — why, what that costs you, and whether
+              TATVA has a validated rewrite for it.</p>
             <div class="table-wrap">
               <table>
-                <thead><tr><th>Operator</th><th class="num" style="width:64px">Count</th><th>Lowering on this target</th><th style="width:118px">Verdict</th></tr></thead>
+                <thead><tr>
+                  <th style="width:150px">Operator</th>
+                  <th class="num" style="width:58px">Count</th>
+                  <th style="width:100px">Status</th>
+                  <th style="width:110px">Target support</th>
+                  <th style="width:200px">Lowering</th>
+                  <th style="width:220px">Reason</th>
+                  <th style="width:200px">Impact</th>
+                  <th style="width:170px">Fix availability</th>
+                </tr></thead>
                 <tbody id="s3-table"></tbody>
               </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- §22: what the chip supports, independent of any model. Collapsed by default so
+             the model's own table stays the thing you read first. -->
+        <div class="card">
+          <div class="row between">
+            <div>
+              <h2>Target capability database</h2>
+              <p class="sub" style="margin-bottom:0">Everything <span class="mono" id="s3-cap-target">this target</span> can lower, whether or not your model uses it.</p>
+            </div>
+            <button class="btn" id="btn-caps">Show capabilities</button>
+          </div>
+          <div class="hidden mt" id="s3-caps">
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th style="width:170px">Operator</th><th style="width:100px">Status</th><th>Lowering</th><th style="width:170px">Auto-fix</th></tr></thead>
+                <tbody id="s3-caps-table"></tbody>
+              </table>
+            </div>
+            <div class="footnote mt">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><use href="#i-info"/></svg>
+              <span id="s3-caps-note">—</span>
             </div>
           </div>
         </div>
@@ -516,7 +613,30 @@
           </div>
         </div>
 
+        <!-- The run's own verdict, in the SUCCESS / PARTIAL / BLOCKED / FAILED vocabulary
+             the backend derives once. Written here as text, not inferred from whether the
+             terminal happened to print an error. -->
+        <div class="card hidden" id="s5-outcome">
+          <div class="row between">
+            <div>
+              <h2 style="margin-bottom:0">Outcome</h2>
+              <p class="sub" style="margin-bottom:0" id="s5-outcome-run">—</p>
+            </div>
+            <span class="badge" id="s5-outcome-badge">—</span>
+          </div>
+          <div class="notice mt" id="s5-outcome-note">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg>
+            <span id="s5-outcome-text"></span>
+          </div>
+        </div>
+
+        <!-- §26: both routes offered, neither forced. Artifacts are a place you can go,
+             not a gate in front of the report. -->
         <div class="row end">
+          <button class="btn big hidden" id="btn-s5-artifacts">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-box"/></svg>
+            View Generated Artifacts
+          </button>
           <button class="btn primary big" id="btn-s5-next" disabled>View the benchmark report →</button>
         </div>
       </section>
@@ -537,6 +657,28 @@
         </div>
 
         <div class="hidden" id="report-body">
+          <!-- §9: the report leads with the run's status. A report that opens with a
+               speedup number and mentions the failures further down is a report that gets
+               screenshotted at the top. -->
+          <div class="card" id="r-status-card">
+            <div class="row between">
+              <div>
+                <h2 style="margin-bottom:0" id="r-status-head">—</h2>
+                <p class="sub" style="margin-bottom:0" id="r-status-run">—</p>
+              </div>
+              <span class="badge" id="r-status-badge">—</span>
+            </div>
+            <div class="notice mt" id="r-status-note">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg>
+              <span id="r-status-text"></span>
+            </div>
+            <div class="row mt">
+              <button class="btn small" data-goto="validation">Validation detail →</button>
+              <button class="btn small" data-goto="artifacts">Generated artifacts →</button>
+              <button class="btn small" data-goto="evidence">Engineering evidence →</button>
+            </div>
+          </div>
+
           <div class="grid four">
             <div class="stat"><div class="k">Baseline</div><div class="v" id="r-base">—</div><div class="n">FP32, no passes</div></div>
             <div class="stat"><div class="k">Optimized</div><div class="v ok" id="r-opt">—</div><div class="n" id="r-opt-n">with selected passes</div></div>
@@ -563,6 +705,223 @@
               </table>
             </div>
             <div class="term auto mt" id="r-digest"></div>
+          </div>
+
+          <!-- §12: engineering effort. One number, computed in the backend, with the
+               whole derivation one click away. The figure is labelled an estimate on the
+               card itself, not only inside the panel -- someone who never opens the panel
+               still cannot mistake it for something that was measured. -->
+          <div class="card" id="r-effort-card">
+            <div class="row between">
+              <div>
+                <h2 style="margin-bottom:0">Engineering effort avoided</h2>
+                <p class="sub" style="margin-bottom:0">What doing this run by hand would have cost, under a stated model.</p>
+              </div>
+              <button class="btn small" id="btn-effort-how">How calculated?</button>
+            </div>
+
+            <div class="empty mt hidden" id="r-effort-empty">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg>
+              <div id="r-effort-reason">—</div>
+            </div>
+
+            <div class="hidden mt" id="r-effort-body">
+              <div class="grid three">
+                <div class="stat"><div class="k">Estimated hours</div><div class="v gold" id="r-effort-hours">—</div><div class="n" id="r-effort-days">—</div></div>
+                <div class="stat"><div class="k">Kind</div><div class="v" style="font-size:15px" id="r-effort-kind">Estimate</div><div class="n">not a measurement</div></div>
+                <div class="stat"><div class="k">Effort model</div><div class="v" style="font-size:15px" id="r-effort-model">—</div><div class="n" id="r-effort-source">—</div></div>
+              </div>
+
+              <div class="hidden mt" id="r-effort-how">
+                <div class="notice info">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg>
+                  <span id="r-effort-disclaimer"></span>
+                </div>
+                <div class="table-wrap mt">
+                  <table>
+                    <thead><tr>
+                      <th>Line</th>
+                      <th class="num" style="width:90px">Quantity</th>
+                      <th style="width:180px">Where the quantity came from</th>
+                      <th class="num" style="width:110px">Hours per unit</th>
+                      <th class="num" style="width:80px">Hours</th>
+                    </tr></thead>
+                    <tbody id="r-effort-table"></tbody>
+                  </table>
+                </div>
+                <div class="stack mt" id="r-effort-basis"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================================================== ARTIFACTS -->
+      <section class="view hidden" id="view-artifacts">
+        <div class="page-head">
+          <div class="eyebrow">Results</div>
+          <h1>Generated artifacts</h1>
+          <p>The files this build actually wrote, discovered by reading the build directory —
+             not a list of filenames a build is expected to produce. Each one is shown with its
+             real size and SHA-256, and can be opened here.</p>
+        </div>
+
+        <div class="empty" id="artifacts-empty">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><use href="#i-box"/></svg>
+          <div>Nothing generated yet. Stage 05 writes the files this page lists.</div>
+          <button class="btn mt" data-goto="s5" style="margin-top:14px">Go to stage 05</button>
+        </div>
+
+        <div class="hidden" id="artifacts-body">
+          <div class="grid three">
+            <div class="stat"><div class="k">Files</div><div class="v" id="a-count">—</div><div class="n">on disk right now</div></div>
+            <div class="stat"><div class="k">Total size</div><div class="v" id="a-bytes">—</div><div class="n">across every build</div></div>
+            <div class="stat"><div class="k">Builds</div><div class="v" id="a-builds">—</div><div class="n" id="a-builds-n">configurations</div></div>
+          </div>
+
+          <div class="notice info mt" id="a-note">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg>
+            <span id="a-note-text"></span>
+          </div>
+
+          <div id="a-sections"></div>
+
+          <div class="card hidden" id="a-viewer">
+            <div class="row between">
+              <div>
+                <h2 style="margin-bottom:0" id="a-viewer-name">—</h2>
+                <p class="sub mono" style="margin-bottom:0" id="a-viewer-path">—</p>
+              </div>
+              <button class="btn small" id="btn-a-close">Close</button>
+            </div>
+            <div class="term auto mt" id="a-viewer-body"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================================================== VALIDATION -->
+      <section class="view hidden" id="view-validation">
+        <div class="page-head">
+          <div class="eyebrow">Results</div>
+          <h1>Validation</h1>
+          <p>Separate from the benchmark on purpose. The benchmark says how fast it ran;
+             this page says whether what ran was correct. A check TATVA does not implement
+             is listed as not implemented — it is never counted as a pass.</p>
+        </div>
+
+        <div class="empty" id="val-empty">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg>
+          <div>No run to validate yet.</div>
+          <button class="btn mt" data-goto="s5" style="margin-top:14px">Go to stage 05</button>
+        </div>
+
+        <div class="hidden" id="val-body">
+          <div class="card">
+            <div class="row between">
+              <div>
+                <h2 style="margin-bottom:0">Verdict</h2>
+                <p class="sub" style="margin-bottom:0" id="val-run">—</p>
+              </div>
+              <span class="badge" id="val-badge">—</span>
+            </div>
+            <div class="notice mt" id="val-note">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg>
+              <span id="val-summary"></span>
+            </div>
+            <div class="grid four mt">
+              <div class="stat"><div class="k">Passed</div><div class="v ok" id="val-passed">—</div><div class="n">checks that held</div></div>
+              <div class="stat"><div class="k">Failed</div><div class="v" id="val-failed">—</div><div class="n">checks that did not</div></div>
+              <div class="stat"><div class="k">Skipped</div><div class="v" id="val-skipped">—</div><div class="n">did not apply to this run</div></div>
+              <div class="stat"><div class="k">Not implemented</div><div class="v" id="val-todo">—</div><div class="n">TATVA cannot check these yet</div></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Checks TATVA ran</h2>
+            <p class="sub">Each one names the evidence it used, so a pass can be argued with.</p>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th style="width:230px">Check</th><th style="width:120px">Result</th><th>Evidence</th></tr></thead>
+                <tbody id="val-table"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Checks TATVA does not implement</h2>
+            <p class="sub">Listed because leaving them out would make the section above look complete.
+              These are not failures and not passes — they were never run.</p>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th style="width:230px">Check</th><th style="width:120px">Status</th><th>What it would take</th></tr></thead>
+                <tbody id="val-todo-table"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================================================== EVIDENCE -->
+      <section class="view hidden" id="view-evidence">
+        <div class="page-head">
+          <div class="eyebrow">Results</div>
+          <h1>Engineering evidence</h1>
+          <p>What TATVA changed, in what order, and what it checked afterwards. Every graph
+             rewrite and every pass is listed with the validation that followed it — including
+             the rewrites that were discarded.</p>
+        </div>
+
+        <div class="empty" id="ev-empty">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><use href="#i-book"/></svg>
+          <div>No run recorded in this session yet.</div>
+          <button class="btn mt" data-goto="s5" style="margin-top:14px">Go to stage 05</button>
+        </div>
+
+        <div class="hidden" id="ev-body">
+          <div class="card">
+            <h2>Optimization history</h2>
+            <p class="sub">One entry per transformation, in the order they were applied.</p>
+            <div class="table-wrap">
+              <table>
+                <thead><tr>
+                  <th style="width:52px">#</th>
+                  <th style="width:180px">Transformation</th>
+                  <th style="width:120px">Kind</th>
+                  <th>What changed</th>
+                  <th style="width:250px">Validation after it</th>
+                </tr></thead>
+                <tbody id="ev-history"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Graph repairs</h2>
+            <p class="sub">Rewrites applied to make an unsupported operator compile, each with the
+              exact replacement and the check that accepted it.</p>
+            <div class="empty" id="ev-repair-empty">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><use href="#i-spark"/></svg>
+              <div>No repair was needed — every operator mapped as it was.</div>
+            </div>
+            <div class="table-wrap hidden" id="ev-repair-wrap">
+              <table>
+                <thead><tr>
+                  <th style="width:150px">Operator</th>
+                  <th class="num" style="width:70px">Sites</th>
+                  <th style="width:220px">Rewritten to</th>
+                  <th>Why this is equivalent</th>
+                  <th style="width:110px">Result</th>
+                </tr></thead>
+                <tbody id="ev-repair"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Audit trail</h2>
+            <p class="sub">Every stage event, as it was recorded during the run. Written to
+              <span class="mono">audit_trail.json</span> in each build directory.</p>
+            <div class="term auto" id="ev-audit"></div>
           </div>
         </div>
       </section>

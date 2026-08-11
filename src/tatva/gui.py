@@ -1311,6 +1311,34 @@ def _diagnose(exc: BaseException) -> str:
         return ""
 
 
+def _validation_label(structural: str | None, numerical: str | None) -> str:
+    """
+    Describe how a single rewrite was checked, in the words of what actually happened.
+
+    The repair engine records each of its two checks as passed / failed / skipped /
+    not_run. A rewrite whose numerical comparison never ran must not read the same as one
+    that ran and passed, so "not checked" is spelled out rather than collapsed into the
+    structural result.
+    """
+    parts = []
+    if structural == "passed":
+        parts.append("structure re-verified")
+    elif structural == "failed":
+        parts.append("structural check FAILED")
+    else:
+        parts.append("structure not checked")
+
+    if numerical == "passed":
+        parts.append("output compared on the host and unchanged")
+    elif numerical == "failed":
+        parts.append("output changed — rewrite discarded")
+    elif numerical == "skipped":
+        parts.append("host comparison could not run")
+    else:
+        parts.append("output not compared")
+    return "; ".join(parts).capitalize() + "."
+
+
 class TatvaPyBridge:
     """
     Bidirectional Python-JavaScript PyBridge for PyWebView Edge WebView2 Desktop Window.
@@ -1332,6 +1360,12 @@ class TatvaPyBridge:
             "log": [],
             "error": "",
         }
+        # Repaired graphs from `attempt_auto_fix`, keyed on (absolute model path, target
+        # name). The rewritten module lives only in memory, so without this the build
+        # that follows a successful auto-fix would re-import the original file and
+        # quietly compile the graph the user was just told had been repaired.
+        self._repair_lock = threading.Lock()
+        self._repaired: dict[tuple[str, str], Any] = {}
 
     def select_file(self) -> str:
         """
@@ -1771,15 +1805,23 @@ class TatvaPyBridge:
 
         This is the stage the GUI previously had no screen for at all -- the numbering
         jumped from 2 to 4. It answers one question per operator: is there a lowering
-        for it on this target, and what will that lowering actually be? Nothing here is
-        estimated; the operator list comes from the imported Relax module and the
-        verdicts come from the same SUPPORTED_OPS set the compiler enforces.
+        for it on this target, what will that lowering actually be, and if there isn't
+        one, why not and can TATVA do anything about it. Nothing here is estimated; the
+        operator list comes from the imported Relax module and every verdict comes from
+        the capability database, which is built on the same SUPPORTED_OPS set the
+        compiler enforces.
+
+        The per-operator descriptions used to be a chain of substring tests written
+        inline here ("softmax" in op -> fused kernel). That put the UI's account of the
+        backend in a different file from the backend, with nothing keeping them in step.
+        They now come from `tatva.capabilities`, which is also what the CLI reads.
         """
         if not model_path or not os.path.exists(model_path):
             return {"success": False, "error": f"Model file not found: '{model_path}'"}
 
         try:
-            from tatva.compiler import SUPPORTED_OPS, TARGETS, analyze_graph, import_model
+            from tatva.capabilities import capability_for
+            from tatva.compiler import TARGETS, analyze_graph, import_model
 
             variant = TARGETS.get(target_name)
             if variant is None:
@@ -1793,22 +1835,14 @@ class TatvaPyBridge:
 
             operators = []
             for op, count in sorted(histogram.items(), key=lambda kv: (-kv[1], kv[0])):
-                supported = op in SUPPORTED_OPS
-                if not supported:
-                    lowering, kind = "No lowering in TATVA's operator set — compilation stops here.", "blocked"
-                elif "softmax" in op:
-                    lowering, kind = "Single-pass fused kernel (Schraudolph fast exp).", "fused"
-                elif "matmul" in op or "dense" in op:
-                    lowering, kind = "Scalar C loop nest — dominant cycle cost on this target.", "hot"
-                elif "layer_norm" in op:
-                    lowering, kind = "Scalar C reduction over the feature axis.", "hot"
-                else:
-                    lowering, kind = "Generic scalar C emitted by TVM Relax.", "plain"
-                operators.append(
-                    {"op": op, "count": count, "supported": supported, "lowering": lowering, "kind": kind}
-                )
+                cap = capability_for(op, variant, count=count)
+                row = cap.to_json()
+                row["count"] = count
+                operators.append(row)
 
             unsupported = [o["op"] for o in operators if not o["supported"]]
+            fixable = [o["op"] for o in operators if o.get("auto_fix_available")]
+            blocking = [o for o in unsupported if o not in fixable]
 
             # Target-level caveats. These are properties of the chip/codegen pairing, not
             # of the model, and they are the reason a "supported" verdict is not the whole
@@ -1845,11 +1879,138 @@ class TatvaPyBridge:
                 "distinct_ops": len(operators),
                 "operators": operators,
                 "unsupported": unsupported,
+                # Operators with no lowering that a validated rewrite can express, and
+                # those that nothing can. The distinction is what decides whether the
+                # Attempt Auto-Fix control does anything, so the frontend is told rather
+                # than left to infer it.
+                "fixable": fixable,
+                "blocking": blocking,
+                "auto_fix_available": bool(fixable),
                 "warnings": warnings,
                 "ready": not unsupported,
             }
         except Exception as e:
             return {"success": False, "error": f"Operator mapping failed: {e}", "diagnosis": _diagnose(e)}
+
+    def attempt_auto_fix(self, model_path: str, target_name: str) -> dict[str, Any]:
+        """
+        Run the graph-repair engine over a model and report exactly what it did.
+
+        This is the backend behind the Attempt Auto-Fix control on the mapping table. It
+        rewrites the unsupported operators it has exact rules for, then validates the
+        result twice -- structurally, and by executing the original and rewritten graphs
+        on the host and comparing outputs. A rewrite that fails either check is discarded
+        and the original graph is kept.
+
+        Three outcomes are possible and all three are reported plainly: the graph is
+        fully mapped now, part of it is and the rest still blocks code generation, or
+        nothing could be rewritten. The repaired module is held for the subsequent build
+        so the pipeline compiles the graph the user was shown, not the original.
+        """
+        if not model_path or not os.path.exists(model_path):
+            return {"success": False, "error": f"Model file not found: '{model_path}'"}
+
+        try:
+            from tatva.compiler import TARGETS, analyze_graph, import_model
+            from tatva.repair import repair_graph
+
+            variant = TARGETS.get(target_name)
+            if variant is None:
+                return {
+                    "success": False,
+                    "error": f"Unknown target '{target_name}'. Known targets: {', '.join(sorted(TARGETS))}.",
+                }
+
+            before = analyze_graph(import_model(model_path))
+            result = repair_graph(import_model(model_path), variant)
+
+            payload = result.to_json()
+            payload.update({"success": True, "error": "", "target": variant.name})
+
+            if result.applied:
+                # Hold the repaired module so run_pipeline compiles it. Keyed on the
+                # model and target together: a repair is validated against one target's
+                # operator set and must not leak to another.
+                with self._repair_lock:
+                    self._repaired[(os.path.abspath(model_path), variant.name)] = result
+
+                after = analyze_graph(result.model_ir)
+                payload["before"] = {
+                    "total_ops": before.total_ops,
+                    "distinct_ops": len(before.op_histogram),
+                    "unsupported": sorted(before.unsupported_ops),
+                }
+                payload["after"] = {
+                    "total_ops": after.total_ops,
+                    "distinct_ops": len(after.op_histogram),
+                    "unsupported": sorted(after.unsupported_ops),
+                }
+
+            payload["ready"] = result.applied and not result.remaining_unsupported
+            return payload
+        except Exception as e:
+            return {"success": False, "error": f"Auto-fix failed: {e}", "diagnosis": _diagnose(e)}
+
+    def get_target_capabilities(self, target_name: str) -> dict[str, Any]:
+        """
+        The full operator table for a target, so the studio can show what the chip
+        supports without a model loaded. The page holds no operator list of its own.
+        """
+        try:
+            from tatva.capabilities import capability_table, repairable_ops
+            from tatva.compiler import TARGETS
+
+            variant = TARGETS.get(target_name)
+            if variant is None:
+                return {"success": False, "error": f"Unknown target '{target_name}'."}
+            return {
+                "success": True,
+                "error": "",
+                "target": variant.name,
+                "march": variant.gcc_march,
+                "mabi": variant.gcc_mabi,
+                "experimental": variant.experimental,
+                "notes": variant.notes,
+                "operators": capability_table(variant),
+                "repairable": repairable_ops(),
+            }
+        except Exception as e:
+            return {"success": False, "error": f"Capability lookup failed: {e}"}
+
+    def get_model_formats(self) -> dict[str, Any]:
+        """
+        Which model formats TATVA can take, resolved against this installation.
+
+        Statuses are computed, not declared: each format is checked for whether TATVA
+        implements the adapter, whether the installed TVM carries the frontend, and
+        whether the framework's package is importable. Anything short of all three
+        reports Coming Soon with the specific reason.
+        """
+        try:
+            from tatva.frontends import format_table
+
+            return {"success": True, "error": "", "formats": format_table()}
+        except Exception as e:
+            return {"success": False, "error": f"Format registry unavailable: {e}", "formats": []}
+
+    def import_model_info(self, model_path: str) -> dict[str, Any]:
+        """
+        Describe a model the moment it is selected -- framework, format, size, parameter
+        count, input and output shapes, precision, operator count and detected family.
+
+        Reads the file directly and does not import it into TVM, so it is fast enough to
+        run on selection. Every field is read out of the model; the family classifier is
+        allowed to answer "Unable to determine" rather than guess.
+        """
+        try:
+            from tatva.frontends import inspect_model
+
+            info = inspect_model(model_path)
+            payload = info.to_json()
+            payload["success"] = info.ok
+            return payload
+        except Exception as e:
+            return {"success": False, "ok": False, "error": f"Could not inspect the model: {e}"}
 
     def interpret_config(
         self,
@@ -1890,16 +2051,30 @@ class TatvaPyBridge:
         except Exception as e:
             return {"success": False, "error": f"Could not read that as a configuration: {e}"}
 
-    def run_pipeline(self, model_path: str, target_name: str, fuse_softmax: bool = True, do_quantize: bool = False) -> dict[str, Any]:
+    def run_pipeline(
+        self,
+        model_path: str,
+        target_name: str,
+        fuse_softmax: bool = True,
+        do_quantize: bool = False,
+        auto_fix: bool = True,
+    ) -> dict[str, Any]:
         """
         Compile and measure BOTH the baseline and the optimized configuration under QEMU.
 
         Every number returned here comes from an actual emulated run. There is no
         estimation path and no simulated fallback: if the pipeline cannot run, this
         reports the failure instead of inventing a result.
+
+        The run is now recorded as it happens. Analysis, mapping, repair, artifacts,
+        validation, effort and the audit trail are all written to a `RunRecord` under a
+        `run_id`, which the Artifacts, Validation and Evidence pages read afterwards
+        without recompiling. The overall status -- SUCCESS, PARTIAL, BLOCKED or FAILED --
+        is derived in one place from what the stages recorded, so a build that stopped
+        cannot present itself as one that finished.
         """
         if not model_path or not os.path.exists(model_path):
-            return {"success": False, "error": f"Model file not found: '{model_path}'"}
+            return {"success": False, "status": "FAILED", "error": f"Model file not found: '{model_path}'"}
 
         passes: list[str] = []
         if fuse_softmax:
@@ -1907,73 +2082,37 @@ class TatvaPyBridge:
         if do_quantize:
             passes.append("quantize")
 
-        try:
-            from tatva.compiler import TARGETS
-            from tatva.optimizer import compare_configs
+        from tatva import artifacts as artifacts_mod
+        from tatva import audit as audit_mod
+        from tatva import effort as effort_mod
+        from tatva import runs, validation
+        from tatva.compiler import TARGETS
 
-            variant = TARGETS.get(target_name)
-            if variant is None:
-                return {
-                    "success": False,
-                    "error": f"Unknown target '{target_name}'. Known targets: {', '.join(sorted(TARGETS))}.",
-                }
-
-            configs = ["baseline"] + (["optimized"] if passes else [])
-            res = compare_configs(model_path, variant, configs, passes=passes)
-            comp = res["comparison"]
-
-            base_ms = res["results"]["baseline"]["latency"].mean_ms
-            if passes:
-                opt_ms = comp["opt_mean_ms"]
-                mse = comp["opt_accuracy_delta_mse"]
-                accuracy_ok = comp["opt_accuracy_ok"]
-            else:
-                # No passes selected: baseline is the only measurement we have.
-                opt_ms, mse, accuracy_ok = base_ms, 0.0, True
-
-            speedup = round(((base_ms - opt_ms) / base_ms) * 100.0, 2) if base_ms else 0.0
-
-            digest = (
-                f"=== TATVA RISC-V OPTIMIZATION PIPELINE EXECUTION ===\n"
-                f"Target Architecture : {variant.name} ({variant.gcc_march})\n"
-                f"Model File Path     : {model_path}\n"
-                f"Softmax Fusion Pass : {'ENABLED' if fuse_softmax else 'DISABLED'}\n"
-                f"INT8 Quant Pass     : {'ENABLED' if do_quantize else 'DISABLED'}\n"
-                f"Compiler Backend    : TVM Relax -> C -> riscv-none-elf-gcc\n"
-                f"Measurement         : QEMU system-mode, rdcycle, -icount shift=0"
-            )
-
-            # A run that completes but lands outside the parity tolerance is a failure the
-            # user has to act on, and "FAIL [accuracy outside tolerance]" does not say what
-            # to do about it. compare_configs returns rather than raises here, so build the
-            # same context classify_failure would have produced from an AccuracyDropError.
-            diagnosis = ""
-            if not accuracy_ok:
-                from tatva.diagnostics import AccuracyDropError
-                diagnosis = _diagnose(AccuracyDropError(mse=float(mse), tolerance=0.05))
-
+        variant = TARGETS.get(target_name)
+        if variant is None:
             return {
-                "success": True,
-                "error": "",
-                "diagnosis": diagnosis,
-                "config_digest": digest,
-                # Four decimals, not two. A small model runs in well under a millisecond
-                # under QEMU, and rounding to 2 dp turned a real baseline/optimized gap
-                # into "0.06 ms" against "0.06 ms" -- two identical bars on the chart for
-                # a run that did measure a difference. `speedup` above is computed from
-                # the unrounded values, so it stays correct either way; this is about the
-                # numbers the user actually reads.
-                "base_ms": round(base_ms, 4),
-                "opt_ms": round(opt_ms, 4),
-                "speedup": speedup,
-                "baseline_ms": round(base_ms, 4),
-                "optimized_ms": round(opt_ms, 4),
-                "speedup_pct": speedup,
-                "mse": mse,
-                "accuracy_ok": accuracy_ok,
-                "measured": True,
-                "status": "PASS [OK]" if accuracy_ok else "FAIL [accuracy outside tolerance]",
+                "success": False,
+                "status": "FAILED",
+                "error": f"Unknown target '{target_name}'. Known targets: {', '.join(sorted(TARGETS))}.",
             }
+
+        record = runs.REGISTRY.new_run(
+            model_path=os.path.abspath(model_path),
+            model_name=os.path.basename(model_path),
+            target_name=variant.name,
+            march=variant.gcc_march,
+            mabi=variant.gcc_mabi,
+            passes=list(passes),
+        )
+        trail = record.trail
+        trail.info("Run", "Pipeline started", detail=f"{record.model_name} -> {variant.name}", evidence={
+            "model": record.model_path, "target": variant.name, "march": variant.gcc_march,
+            "passes": passes, "auto_fix": bool(auto_fix),
+        })
+
+        try:
+            return self._run_pipeline_inner(record, variant, passes, auto_fix,
+                                            artifacts_mod, audit_mod, effort_mod, runs, validation)
         except Exception as e:
             # The beta scope calls plain-English diagnostics the key differentiator, and
             # this is the one place a user actually meets a compiler failure. Returning
@@ -1981,19 +2120,578 @@ class TatvaPyBridge:
             # bytes" -- which is exactly the raw-compiler-error experience the rule engine
             # in diagnostics.py exists to replace. The CLI (`tatva diagnose`) and the
             # legacy Tk front end already route through it; the web GUI did not.
+            diagnosis = _diagnose(e)
+            record.error = f"Pipeline failed: {e}"
+            record.diagnosis = diagnosis
+            trail.error("Run", "Pipeline failed", detail=str(e), evidence={"exception": type(e).__name__})
+            runs.REGISTRY.finish(record)
             return {
                 "success": False,
                 "measured": False,
-                "error": f"Pipeline failed: {e}",
-                "diagnosis": _diagnose(e),
+                "run_id": record.run_id,
+                "error": record.error,
+                "diagnosis": diagnosis,
                 "config_digest": (
                     f"=== TATVA RISC-V OPTIMIZATION PIPELINE — FAILED ===\n"
                     f"Target Architecture : {target_name}\n"
                     f"Model File Path     : {model_path}\n"
                     f"Failure             : {e}"
                 ),
-                "status": "ERROR",
+                "status": record.status,
+                "status_reason": record.status_reason,
             }
+
+    def _run_pipeline_inner(
+        self, record: Any, variant: Any, passes: list[str], auto_fix: bool,
+        artifacts_mod: Any, audit_mod: Any, effort_mod: Any, runs: Any, validation: Any,
+    ) -> dict[str, Any]:
+        """
+        The pipeline body, stage by stage.
+
+        Split out of `run_pipeline` so the failure handler there wraps every stage
+        uniformly -- an exception anywhere below lands in one place, gets diagnosed once,
+        and is recorded on the run rather than escaping as a bare string to the frontend.
+        """
+        from tatva.compiler import analyze_graph, import_model
+        from tatva.frontends import inspect_model
+        from tatva.optimizer import compare_configs
+
+        trail = record.trail
+        model_path = record.model_path
+
+        # ---- model description
+        info = inspect_model(model_path)
+        record.model_info = info.to_json()
+        if info.ok:
+            trail.ok("Import", "Model inspected", detail=f"{info.format}, {info.parameter_count:,} parameters",
+                     evidence={"format": info.format, "parameters": info.parameter_count,
+                               "precision": info.precision, "onnx_ops": info.op_count,
+                               "family": info.family.get("family", "")})
+
+        # ---- graph import and analysis
+        model_ir = import_model(model_path)
+        report = analyze_graph(model_ir)
+        record.analysis = {
+            "total_ops": report.total_ops,
+            "distinct_ops": len(report.op_histogram),
+            "op_histogram": dict(report.op_histogram),
+            "unsupported_ops": sorted(report.unsupported_ops),
+            "has_transformer_bottleneck": report.has_transformer_bottleneck,
+        }
+        trail.ok("Analyze", "Graph imported and analysed",
+                 detail=f"{report.total_ops} operator calls, {len(report.op_histogram)} distinct kinds",
+                 evidence={"total_ops": report.total_ops, "distinct": len(report.op_histogram),
+                           "unsupported": sorted(report.unsupported_ops)})
+
+        # ---- mapping against the target
+        record.mapping = self.map_operators(model_path, variant.name)
+        unsupported = sorted(report.unsupported_ops)
+        trail.record("Map", "Operators mapped against the target",
+                     outcome="ok" if not unsupported else "warn",
+                     detail=(f"{len(unsupported)} operator kind(s) have no lowering" if unsupported
+                             else "Every operator has a lowering"),
+                     evidence={"unsupported": unsupported,
+                               "fixable": record.mapping.get("fixable", []),
+                               "blocking": record.mapping.get("blocking", [])})
+
+        # ---- repair, if the graph needs it and the user has not opted out
+        build_ir = None
+        if unsupported:
+            key = (model_path, variant.name)
+            with self._repair_lock:
+                cached = self._repaired.get(key)
+
+            result = cached
+            if result is None and auto_fix:
+                from tatva.repair import repair_graph
+
+                trail.info("Repair", "Attempting graph repair",
+                           detail=f"{len(unsupported)} unsupported operator kind(s)",
+                           evidence={"unsupported": unsupported})
+                result = repair_graph(import_model(model_path), variant)
+                if result.applied:
+                    with self._repair_lock:
+                        self._repaired[key] = result
+            elif result is not None:
+                trail.info("Repair", "Reusing the repair from Attempt Auto-Fix",
+                           detail=result.message, evidence={"repaired_ops": result.repaired_ops})
+
+            if result is not None:
+                record.repair = result.to_json()
+                trail.record(
+                    "Repair", f"Repair {result.status.lower()}",
+                    outcome=("ok" if result.status == "REPAIRED" else
+                             "warn" if result.status == "PARTIAL" else "blocked"),
+                    detail=result.message,
+                    evidence={
+                        "repaired_ops": result.repaired_ops,
+                        "remaining_unsupported": result.remaining_unsupported,
+                        "structural_validation": result.structural_validation,
+                        "numerical_validation": result.numerical_validation,
+                        "max_abs_diff": result.max_abs_diff,
+                    },
+                )
+                if result.applied:
+                    build_ir = result.model_ir
+                    # Carried so the optimizer's cache key can tell a repaired build from
+                    # an unrepaired one for the same file.
+                    build_ir.metadata["repaired_ops"] = list(result.repaired_ops)
+                remaining = result.remaining_unsupported
+            else:
+                remaining = unsupported
+                trail.blocked("Repair", "Automatic repair not attempted",
+                              detail="Auto-fix is off for this run.", evidence={"unsupported": unsupported})
+
+            if remaining:
+                # Nothing further is honest here: the backend has no kernel for these and
+                # no validated rewrite. Stop, name them, and do not report a latency.
+                trail.blocked("Codegen", "Code generation not started",
+                              detail=f"{len(remaining)} operator kind(s) still have no lowering.",
+                              evidence={"remaining": remaining})
+                record.validation = validation.evaluate(self._validation_input(record)).to_json()
+                record.effort = effort_mod.compute(self._effort_input(record)).to_json()
+                runs.REGISTRY.finish(record)
+                return self._pipeline_payload(record, measured=False)
+
+        # ---- build and measure
+        configs = ["baseline"] + (["optimized"] if passes else [])
+        trail.info("Build", "Compiling and measuring",
+                   detail=f"configurations: {', '.join(configs)}",
+                   evidence={"configs": configs, "passes": passes,
+                             "graph": "repaired" if build_ir is not None else "original"})
+
+        res = compare_configs(model_path, variant, configs, passes=passes, model_ir=build_ir)
+        comp = res["comparison"]
+        record.build_dirs = {name: data.get("build_dir", "") for name, data in res["results"].items()}
+
+        base_ms = res["results"]["baseline"]["latency"].mean_ms
+        has_optimized = "optimized" in res["results"]
+        if has_optimized:
+            opt_ms = comp["opt_mean_ms"]
+            mse = comp["opt_accuracy_delta_mse"]
+            accuracy_ok = comp["opt_accuracy_ok"]
+        else:
+            # No optimization pass was selected. The baseline is still compared against
+            # the host reference -- this used to report mse=0.0 and accuracy_ok=True,
+            # which announced a parity check that had not been performed.
+            opt_ms = base_ms
+            mse = comp.get("baseline_accuracy_delta_mse", float("nan"))
+            accuracy_ok = bool(comp.get("baseline_accuracy_ok", False))
+
+        speedup = round(((base_ms - opt_ms) / base_ms) * 100.0, 2) if base_ms else 0.0
+
+        trail.ok("Measure", "Emulated run completed",
+                 detail=f"baseline {base_ms:.4f} ms" + (f", optimized {opt_ms:.4f} ms" if has_optimized else ""),
+                 evidence={"baseline_ms": base_ms, "optimized_ms": opt_ms if has_optimized else None,
+                           "speedup_pct": speedup, "environment": "QEMU_SIM",
+                           "build_dirs": record.build_dirs})
+
+        record.benchmark = {
+            "measured": True,
+            "has_optimized": has_optimized,
+            "base_ms": round(base_ms, 4),
+            "opt_ms": round(opt_ms, 4) if has_optimized else None,
+            "speedup_pct": speedup,
+            "mse": mse,
+            "accuracy_ok": accuracy_ok,
+            "accuracy_reference": comp.get("accuracy_reference", "host onnxruntime"),
+            "tolerance": comp.get("tolerance", 0.05),
+            "environment": "QEMU_SIM",
+            "nominal_clock_mhz": 100,
+            "baseline_median_ms": comp.get("baseline_median_ms"),
+            "baseline_p95_ms": comp.get("baseline_p95_ms"),
+            "opt_median_ms": comp.get("opt_median_ms"),
+            "opt_p95_ms": comp.get("opt_p95_ms"),
+            "reference_logits": comp.get("reference_logits", []),
+        }
+
+        # ---- artifacts actually on disk
+        manifest = artifacts_mod.build_manifest(
+            run_id=record.run_id, model_path=model_path, target_name=variant.name,
+            march=variant.gcc_march, mabi=variant.gcc_mabi, configs=record.build_dirs,
+            passes=passes, repaired_ops=(record.repair or {}).get("repaired_ops", []),
+            # Both land in the same directory after this manifest is written: the effort
+            # estimate needs the file counts this manifest produces, and the audit trail
+            # is only complete once every stage below has recorded its outcome.
+            written_after=[effort_mod.EFFORT_FILENAME, audit_mod.AUDIT_FILENAME],
+        )
+        record.manifest = manifest
+        for build_dir in record.build_dirs.values():
+            artifacts_mod.write_manifest(manifest, build_dir)
+        totals = manifest.get("totals", {})
+        trail.ok("Artifacts", "Generated files enumerated",
+                 detail=f"{totals.get('file_count', 0)} file(s), {totals.get('total_bytes', 0):,} bytes",
+                 evidence=totals)
+
+        # ---- optimization history, validation, effort
+        record.optimization_history = self._optimization_history(record, comp, passes)
+        record.validation = validation.evaluate(self._validation_input(record)).to_json()
+        trail.record("Validate", f"Validation {record.validation.get('verdict', '').lower()}",
+                     outcome=("ok" if record.validation.get("verdict") in ("PASSED", "PARTIAL") else "error"),
+                     detail=record.validation.get("summary", ""),
+                     evidence={k: record.validation.get(k) for k in
+                               ("passed", "failed", "skipped", "not_implemented")})
+
+        effort_result = effort_mod.compute(self._effort_input(record))
+        record.effort = effort_result.to_json()
+        for build_dir in record.build_dirs.values():
+            effort_mod.write_effort(effort_result, build_dir, run_id=record.run_id)
+        trail.record("Effort", "Engineering-effort estimate",
+                     outcome="ok" if effort_result.available else "warn",
+                     detail=(f"{effort_result.total_hours} h ({effort_result.total_days} days), "
+                             f"model {effort_result.model_version}" if effort_result.available
+                             else effort_result.reason),
+                     evidence=effort_result.inputs)
+
+        runs.REGISTRY.finish(record)
+        for build_dir in record.build_dirs.values():
+            trail.write(build_dir)
+
+        return self._pipeline_payload(record, measured=True)
+
+    def _validation_input(self, record: Any) -> dict[str, Any]:
+        """Flatten a run into the shape `validation.evaluate` reads. One place, so the
+        validation page and the report cannot be looking at different runs."""
+        from tatva import artifacts as artifacts_mod
+
+        stats = artifacts_mod.generated_source_stats(record.build_dirs)
+        bench = record.benchmark or {}
+        return {
+            "analysis": record.analysis,
+            "unsupported_ops": ((record.repair or {}).get("remaining_unsupported")
+                                if record.repair else (record.analysis or {}).get("unsupported_ops", [])),
+            "target_name": record.target_name,
+            "repair": record.repair,
+            "build_dirs": record.build_dirs,
+            "build_attempted": bool(record.build_dirs) or bool(record.benchmark),
+            "build_error": record.error,
+            "import_error": record.error,
+            "generated_files": stats["generated_files"],
+            "generated_lines": stats["generated_lines"],
+            "measured": bool(bench.get("measured")),
+            "environment": bench.get("environment", ""),
+            "base_ms": bench.get("base_ms"),
+            "nominal_clock_mhz": bench.get("nominal_clock_mhz", 100),
+            "parity_applicable": bool(bench.get("measured")),
+            "accuracy_ok": bench.get("accuracy_ok"),
+            "accuracy_reference": bench.get("accuracy_reference", "host ONNX Runtime"),
+            "mse": bench.get("mse"),
+            "tolerance": bench.get("tolerance"),
+        }
+
+    def _effort_input(self, record: Any) -> Any:
+        """Counted quantities for the effort model -- all of them read from the run."""
+        from tatva import artifacts as artifacts_mod
+        from tatva.effort import EffortInputs
+
+        stats = artifacts_mod.generated_source_stats(record.build_dirs)
+        analysis = record.analysis or {}
+        return EffortInputs(
+            distinct_operator_kinds=int(analysis.get("distinct_ops") or 0),
+            total_operator_calls=int(analysis.get("total_ops") or 0),
+            generated_files=stats["generated_files"],
+            generated_lines=stats["generated_lines"],
+            repaired_op_kinds=len((record.repair or {}).get("repaired_ops") or []),
+            build_configs=len(record.build_dirs),
+            benchmark_runs=len(record.build_dirs) if (record.benchmark or {}).get("measured") else 0,
+        )
+
+    def _optimization_history(self, record: Any, comp: dict[str, Any], passes: list[str]) -> list[dict[str, Any]]:
+        """
+        What each transformation changed, why, and how it was checked.
+
+        The measured effect is reported once, for the passes as a group, because that is
+        how they were measured: `compare_configs` builds one optimized configuration with
+        every selected pass applied. Splitting one measurement into a per-pass attribution
+        would be arithmetic on a number that was never collected that way.
+        """
+        history: list[dict[str, Any]] = []
+
+        for rec in (record.repair or {}).get("records", []):
+            history.append({
+                "stage": "Graph repair",
+                "name": f"Rewrite {rec['original_op']}",
+                "before": f"{rec['original_op']} x{rec['occurrences']} (no lowering on {record.target_name})",
+                "after": " -> ".join(rec["replacement_ops"]) or "(unchanged)",
+                "reason": rec.get("reason", ""),
+                "impact": "Unblocked code generation for this operator." if rec.get("mapping_result") == "MAPPED"
+                          else "Rewritten, but the result is still unmapped.",
+                "validation": _validation_label(rec.get("structural_validation"), rec.get("numerical_validation")),
+                "detail": rec.get("identity", ""),
+            })
+
+        skipped_note = comp.get("opt_optimization_skipped", "")
+        if "fuse" in passes:
+            applied = not skipped_note
+            history.append({
+                "stage": "Optimization",
+                "name": "Softmax kernel selection",
+                "before": "TVM's default softmax kernel (exact expf per element).",
+                "after": ("Single-pass kernel using a Schraudolph fast exponential." if applied
+                          else "Unchanged."),
+                "reason": ("Softmax feeding matmul is the dominant transcendental cost on a scalar target."
+                           if applied else skipped_note),
+                "impact": "Measured together with the other selected passes; see below." if applied
+                          else "No effect: the pass did not apply to this graph.",
+                "validation": ("Covered by the end-to-end parity check against host ONNX Runtime."
+                               if applied else "Not applicable."),
+                "detail": skipped_note,
+            })
+
+        if "quantize" in passes:
+            history.append({
+                "stage": "Optimization",
+                "name": "INT8 quantization",
+                "before": "FP32 weights and activations.",
+                "after": "INT8 symmetric weights with a host-calibrated activation scale.",
+                "reason": "Reduces weight memory and integer-izes the dominant matmuls.",
+                "impact": "Measured together with the other selected passes; see below.",
+                "validation": "Covered by the end-to-end parity check against host ONNX Runtime.",
+                "detail": "Activation scale calibrated on the host at the p99.9 percentile.",
+            })
+
+        bench = record.benchmark or {}
+        if bench.get("measured") and bench.get("has_optimized"):
+            delta = bench["base_ms"] - (bench["opt_ms"] or 0.0)
+            history.append({
+                "stage": "Measurement",
+                "name": f"Combined effect of: {', '.join(passes)}",
+                "before": f"{bench['base_ms']} ms (baseline, no passes)",
+                "after": f"{bench['opt_ms']} ms",
+                "reason": "Both configurations were built and run under the same emulator settings.",
+                "impact": f"{delta:+.4f} ms ({bench['speedup_pct']:+.2f}%) under QEMU at a nominal 100 MHz.",
+                "validation": (f"Parity MSE {bench['mse']} against a tolerance of {bench['tolerance']} "
+                               f"({'within' if bench['accuracy_ok'] else 'outside'} tolerance)."),
+                "detail": "Emulated cycle counts, not silicon.",
+            })
+
+        return history
+
+    def _pipeline_payload(self, record: Any, *, measured: bool) -> dict[str, Any]:
+        """
+        The object the frontend receives.
+
+        Carries the legacy field names the report page already reads, plus the run id
+        and the derived status. Nothing here recomputes a number: every value is copied
+        from what the stages recorded.
+        """
+        bench = record.benchmark or {}
+        passes = record.passes
+
+        if measured:
+            digest = (
+                f"=== TATVA RISC-V OPTIMIZATION PIPELINE EXECUTION ===\n"
+                f"Run ID              : {record.run_id}\n"
+                f"Target Architecture : {record.target_name} ({record.march})\n"
+                f"Model File Path     : {record.model_path}\n"
+                f"Softmax Fusion Pass : {'ENABLED' if 'fuse' in passes else 'DISABLED'}\n"
+                f"INT8 Quant Pass     : {'ENABLED' if 'quantize' in passes else 'DISABLED'}\n"
+                f"Graph Repair        : "
+                + (", ".join((record.repair or {}).get("repaired_ops", [])) or "not required") + "\n"
+                "Compiler Backend    : TVM Relax -> C -> riscv-none-elf-gcc\n"
+                "Measurement         : QEMU system-mode, rdcycle, -icount shift=0"
+            )
+        else:
+            digest = (
+                f"=== TATVA RISC-V OPTIMIZATION PIPELINE — {record.status} ===\n"
+                f"Run ID              : {record.run_id}\n"
+                f"Target Architecture : {record.target_name} ({record.march})\n"
+                f"Model File Path     : {record.model_path}\n"
+                f"Reason              : {record.status_reason}"
+            )
+
+        diagnosis = record.diagnosis
+        if measured and not bench.get("accuracy_ok"):
+            # A run that completes but lands outside the parity tolerance is a failure the
+            # user has to act on, and a bare status line does not say what to do about it.
+            # compare_configs returns rather than raises here, so build the same context
+            # classify_failure would have produced from an AccuracyDropError.
+            from tatva.diagnostics import AccuracyDropError
+            diagnosis = _diagnose(AccuracyDropError(mse=float(bench.get("mse") or 0.0),
+                                                    tolerance=float(bench.get("tolerance") or 0.05)))
+
+        payload: dict[str, Any] = {
+            "success": measured,
+            "run_id": record.run_id,
+            "status": record.status,
+            "status_reason": record.status_reason,
+            "error": record.error,
+            "diagnosis": diagnosis,
+            "config_digest": digest,
+            "measured": measured,
+            "has_optimized": bool(bench.get("has_optimized")),
+            "repair": record.repair,
+            # After a repair, what still blocks is the repair's leftovers -- an empty list
+            # there means "nothing is unsupported any more", not "fall back to the list
+            # from before the repair ran".
+            "unsupported": ((record.repair or {}).get("remaining_unsupported")
+                            if record.repair else (record.analysis or {}).get("unsupported_ops", [])),
+            "validation_verdict": (record.validation or {}).get("verdict", ""),
+            "validation_summary": (record.validation or {}).get("summary", ""),
+            "effort_available": bool((record.effort or {}).get("available")),
+            "artifact_count": (record.manifest or {}).get("totals", {}).get("file_count", 0),
+        }
+
+        if measured:
+            # Four decimals, not two. A small model runs in well under a millisecond
+            # under QEMU, and rounding to 2 dp turned a real baseline/optimized gap into
+            # "0.06 ms" against "0.06 ms" -- two identical bars on the chart for a run
+            # that did measure a difference.
+            payload.update({
+                "base_ms": bench["base_ms"],
+                "opt_ms": bench["opt_ms"] if bench.get("has_optimized") else bench["base_ms"],
+                "speedup": bench["speedup_pct"],
+                "baseline_ms": bench["base_ms"],
+                "optimized_ms": bench["opt_ms"] if bench.get("has_optimized") else bench["base_ms"],
+                "speedup_pct": bench["speedup_pct"],
+                "mse": bench["mse"],
+                "accuracy_ok": bench["accuracy_ok"],
+                "accuracy_reference": bench["accuracy_reference"],
+                "tolerance": bench["tolerance"],
+            })
+        return payload
+
+    # ------------------------------------------------------------------ run readback
+    #
+    # Everything below reads a finished run out of the registry. They exist so the
+    # Artifacts, Validation, Evidence and Effort pages do not have to hold the whole
+    # result in the page and hand it back, and so none of them recomputes anything.
+
+    def get_run(self, run_id: str = "") -> dict[str, Any]:
+        from tatva import runs
+
+        record = runs.REGISTRY.get(run_id)
+        if record is None:
+            return {"success": False, "error": "No run to show yet. Compile a model first."}
+        return {"success": True, "error": "", **record.to_json()}
+
+    def list_runs(self, limit: int = 10) -> dict[str, Any]:
+        from tatva import runs
+
+        return {"success": True, "error": "", "runs": runs.REGISTRY.recent(limit)}
+
+    def get_artifacts(self, run_id: str = "") -> dict[str, Any]:
+        """
+        The files a run actually produced, read back off disk.
+
+        Re-enumerating rather than replaying the manifest is deliberate: it means the
+        page cannot show a file that has since been deleted, and it picks up anything
+        the build wrote that the manifest was assembled before.
+        """
+        from tatva import artifacts as artifacts_mod
+        from tatva import runs
+
+        record = runs.REGISTRY.get(run_id)
+        if record is None:
+            return {"success": False, "error": "No run to show yet. Compile a model first.", "builds": []}
+        if not record.build_dirs:
+            return {
+                "success": True, "error": "", "run_id": record.run_id, "builds": [],
+                "totals": {"file_count": 0, "total_bytes": 0},
+                "reason": record.status_reason or "This run produced no files.",
+                **record.summary(),
+            }
+
+        builds = []
+        for config_name, build_dir in record.build_dirs.items():
+            found = artifacts_mod.discover(build_dir)
+            builds.append({
+                "config": config_name,
+                "build_dir": build_dir,
+                "exists": os.path.isdir(build_dir),
+                "file_count": len(found),
+                "total_bytes": sum(a.size_bytes for a in found),
+                "artifacts": [a.to_json() for a in found],
+            })
+        return {
+            "success": True, "error": "", "builds": builds,
+            "totals": {
+                "file_count": sum(b["file_count"] for b in builds),
+                "total_bytes": sum(b["total_bytes"] for b in builds),
+            },
+            "manifest_filename": artifacts_mod.MANIFEST_FILENAME,
+            **record.summary(),
+        }
+
+    def read_artifact(self, path: str, max_bytes: int = 200_000) -> dict[str, Any]:
+        """
+        Read one generated file for the in-app viewer.
+
+        Restricted to files inside a build directory of a recorded run -- the frontend
+        passes back a path this bridge handed it, and this makes that the only thing it
+        can ask for. Binary files are not decoded; their size is reported instead.
+        """
+        from tatva import runs
+
+        target = os.path.abspath(path or "")
+        allowed = any(
+            target.startswith(os.path.abspath(d) + os.sep)
+            for record in [runs.REGISTRY.get(rid["run_id"]) for rid in runs.REGISTRY.recent(runs.MAX_RUNS)]
+            if record for d in record.build_dirs.values() if d
+        )
+        if not allowed:
+            return {"success": False, "error": "That file is not part of a build from this session."}
+        if not os.path.isfile(target):
+            return {"success": False, "error": "The file is no longer on disk."}
+
+        size = os.path.getsize(target)
+        if os.path.splitext(target)[1].lower() in (".elf", ".bin", ".o"):
+            return {
+                "success": True, "error": "", "binary": True, "path": target,
+                "size_bytes": size, "content": "",
+                "note": "Binary file. Size and hash are listed above; TATVA does not disassemble it in-app.",
+            }
+        try:
+            with open(target, encoding="utf-8", errors="replace") as fh:
+                content = fh.read(max_bytes)
+        except OSError as e:
+            return {"success": False, "error": f"Could not read the file: {e}"}
+        return {
+            "success": True, "error": "", "binary": False, "path": target, "size_bytes": size,
+            "content": content, "truncated": size > max_bytes,
+        }
+
+    def get_validation(self, run_id: str = "") -> dict[str, Any]:
+        from tatva import runs
+
+        record = runs.REGISTRY.get(run_id)
+        if record is None:
+            return {"success": False, "error": "No run to show yet. Compile a model first."}
+        if not record.validation:
+            return {"success": True, "error": "", "checks": [], "verdict": "NOT_RUN",
+                    "summary": "Validation has not run for this build.", **record.summary()}
+        return {"success": True, "error": "", **record.validation, **record.summary()}
+
+    def get_effort(self, run_id: str = "") -> dict[str, Any]:
+        from tatva import runs
+
+        record = runs.REGISTRY.get(run_id)
+        if record is None:
+            return {"success": False, "error": "No run to show yet. Compile a model first."}
+        if not record.effort:
+            return {"success": True, "error": "", "available": False,
+                    "reason": "No estimate: this run produced nothing to count.", **record.summary()}
+        return {"success": True, "error": "", **record.effort, **record.summary()}
+
+    def get_optimization_history(self, run_id: str = "") -> dict[str, Any]:
+        from tatva import runs
+
+        record = runs.REGISTRY.get(run_id)
+        if record is None:
+            return {"success": False, "error": "No run to show yet. Compile a model first."}
+        return {"success": True, "error": "", "history": record.optimization_history, **record.summary()}
+
+    def get_audit_trail(self, run_id: str = "") -> dict[str, Any]:
+        from tatva import runs
+
+        record = runs.REGISTRY.get(run_id)
+        if record is None:
+            return {"success": False, "error": "No run to show yet. Compile a model first."}
+        return {
+            "success": True, "error": "",
+            **(record.trail.to_json() if record.trail else {"events": [], "counts": {}}),
+            **record.summary(),
+        }
 
     def run_autonomous_loop(self, prompt_text: str, target_name: str, model_name: str) -> dict[str, Any]:
         try:

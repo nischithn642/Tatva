@@ -328,24 +328,40 @@ fuse_attention_softmax = select_fast_softmax_kernel
 
 
 def compare_configs(
-    onnx_path: str, variant: TargetVariant, configs: list[str], passes: list[str] | None = None
+    onnx_path: str,
+    variant: TargetVariant,
+    configs: list[str],
+    passes: list[str] | None = None,
+    model_ir: Any = None,
 ) -> dict[str, Any]:
     """
     Compare baseline (FP32) and optimized models on the same imported model instance.
     Reuses the same imported instance to avoid redundant loading, and utilizes session cache.
+
+    `model_ir` lets a caller supply an already-imported module instead of loading the
+    file again. The graph-repair engine uses it to compile the *rewritten* graph: the
+    repaired module exists only in memory, so without this the compile below would
+    silently re-import the unrepaired file from disk and the repair would have no effect
+    on anything that was built.
     """
     from tatva._cache import GLOBAL_SESSION_CACHE
     from tatva.compiler import import_model
     from tatva.runner import ExecutionEnvironment, compile_model, reference_output, run_and_measure
 
     pass_key = ",".join(sorted(passes or [])) + ":" + ",".join(sorted(configs or []))
+    # A repaired graph and the original file share a path, so without this the cache
+    # would hand a repaired run's results back to an unrepaired one, and vice versa.
+    if model_ir is not None:
+        repaired = model_ir.metadata.get("repaired_ops") if hasattr(model_ir, "metadata") else None
+        pass_key += ":repaired=" + (",".join(sorted(repaired)) if repaired else "supplied")
     target_key = variant.name if hasattr(variant, "name") else str(variant)
 
     cached_res = GLOBAL_SESSION_CACHE.get_artifact(onnx_path, pass_key, target_key)
     if cached_res is not None:
         return cached_res
 
-    model_ir = import_model(onnx_path)
+    if model_ir is None:
+        model_ir = import_model(onnx_path)
     results = {}
     skipped: dict[str, str | None] = {}
 
@@ -413,6 +429,11 @@ def compare_configs(
     # Scoring an optimized build against the baseline build only measures how far
     # the two RISC-V binaries drift from each other; if the baseline itself were
     # wrong, every optimized config would score a perfect zero MSE against it.
+    #
+    # Note this reads the file on disk, so when `model_ir` is a repaired graph the
+    # reference is still the *original, unrepaired* model. That is deliberate: a rewrite
+    # is only legitimate if the binary it produces still matches the model the user gave
+    # us. Referencing the repaired graph against itself would make every rewrite pass.
     accuracy_tolerance = 0.05
     ref_logits = [float(x) for x in reference_output(onnx_path)[:5]]
     ref_arr = np.array(ref_logits)

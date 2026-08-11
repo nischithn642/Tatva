@@ -421,6 +421,12 @@ body {
 .tiny { font-size: 11.5px; }
 .mono { font-family: var(--mono); }
 .gold { color: var(--gold); }
+/* Inline verdict colours for table cells. Prefixed rather than named `.ok`/`.err`,
+   because those already exist as *modifiers* on .notice, .dot and .stat .v -- a bare
+   rule of the same name would tint the whole body of every success notice green. */
+.t-ok { color: var(--ok); }
+.t-warn { color: var(--warn); }
+.t-err { color: var(--err); }
 
 /* Bulleted feature lists (the Available / Experimental / Roadmap columns). */
 .ticks { list-style: none; margin: var(--s3) 0 0; padding: 0; }
