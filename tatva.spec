@@ -74,8 +74,14 @@ for sample in ('model_mlp.onnx', 'model.onnx', 'model_nano.onnx', 'model_medium.
     if os.path.exists(os.path.join(ROOT, src)):
         datas.append((src, 'models'))
 
-# Docs the diagnostics panel quotes. Optional -- a missing one should not fail the build.
-for doc in ('BASELINE.md', 'OPTIMIZATION.md', 'README.md'):
+# Docs the diagnostics panel quotes, plus the stage guide the installer verifies for.
+# Optional -- a missing one should not fail the build.
+#
+# TATVA-Stage-Guide.pdf is listed here rather than copied into dist/TATVA by hand.
+# It was hand-copied once, and the next PyInstaller run rewrote that folder and
+# dropped it, so the installer built one file lighter than the release before it
+# and only build_installer.py's verify step noticed.
+for doc in ('BASELINE.md', 'OPTIMIZATION.md', 'README.md', 'TATVA-Stage-Guide.pdf'):
     if os.path.exists(os.path.join(ROOT, doc)):
         datas.append((doc, '.'))
 
