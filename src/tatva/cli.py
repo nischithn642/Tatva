@@ -736,11 +736,17 @@ def optimize(
             )
             sys.exit(1)
 
-    # Print regression warning if quantize is requested
+    # Print regression warning if quantize is requested. The warning states the
+    # structural reason rather than a latency figure: the pass round-trips values
+    # through INT8 and then computes in FP32, so it can only add work. Quoting a
+    # fixed millisecond delta here would be inventing a number -- the real one
+    # depends on the model and is measured and printed by the run below.
     if "quantize" in selected_passes:
         click.secho(
-            "Warning: 'quantize' is an experimental pass with a known latency regression (~197ms vs ~161ms baseline) "
-            "on scalar RISC-V targets.",
+            "Warning: 'quantize' simulates INT8 numerics -- values are round-tripped through "
+            "INT8 but the matmuls still execute in FP32 -- so it measures the accuracy cost of "
+            "quantization and is expected to be SLOWER than the FP32 baseline on scalar RISC-V "
+            "targets. The measured latency for this model is reported below.",
             fg="yellow",
             err=True,
         )
@@ -1023,6 +1029,132 @@ def validate_cmd(models_dir: str, target: str) -> None:
     if failures:
         sys.exit(1)
     sys.exit(0)
+
+
+@cli.command("profile")
+@click.argument("model_path", type=click.Path(exists=True))
+@click.option(
+    "--allow-experimental",
+    is_flag=True,
+    is_eager=True,
+    help="Allow experimental target configurations.",
+)
+@click.option(
+    "--target",
+    "-t",
+    default="RV64GC",
+    callback=validate_target,
+    help="Target architecture variant (e.g. RV64GC, RV64GCV).",
+)
+@click.option(
+    "--passes",
+    "-p",
+    default="",
+    help="Comma-separated passes to apply before profiling (fuse, quantize). Default: none.",
+)
+@click.option("--timed-count", default=10, show_default=True, help="Number of timed iterations to attribute.")
+@click.option("--json", "json_format", is_flag=True, help="Print machine-readable JSON breakdown.")
+def profile_cmd(
+    model_path: str,
+    allow_experimental: bool,
+    target: Any,
+    passes: str,
+    timed_count: int,
+    json_format: bool,
+) -> None:
+    """
+    Attribute simulated cycles to individual generated kernels.
+
+    Builds the model with rdcycle instrumentation around every kernel call and
+    reports where the time actually goes. The instrumented build is used ONLY for
+    this breakdown -- it costs roughly 9 cycles per call site, so the latency it
+    reports is not the latency `tatva baseline-test` reports, and this command
+    prints both so the difference is visible rather than assumed.
+
+    Usage Example:
+      tatva profile models/model.onnx
+      tatva profile models/model.onnx --passes quantize --json
+    """
+    from tatva.runner import compile_model, run_and_measure
+
+    selected_passes = [p.strip().lower() for p in passes.split(",") if p.strip()]
+
+    try:
+        model_ir = import_model(model_path)
+        for name in selected_passes:
+            if name == "fuse":
+                from tatva.optimizer import select_fast_softmax_kernel
+
+                model_ir = select_fast_softmax_kernel(model_ir)
+            elif name == "quantize":
+                from tatva.optimizer import quantize
+
+                model_ir = quantize(model_ir)
+            else:
+                raise click.BadParameter(f"Unknown pass '{name}'. Supported: fuse, quantize.")
+
+        artifact = compile_model(model_ir, target, timed_count=timed_count, profile=True)
+        result = run_and_measure(artifact)
+    except click.ClickException:
+        raise
+    except Exception as e:
+        if json_format:
+            print_json({"status": "error", "error": str(e)})
+            sys.exit(1)
+        handle_cli_exception(e)
+        return
+
+    if not result.kernel_profiles:
+        # Never present an empty breakdown as a successful profile.
+        msg = "The instrumented build produced no KERNEL_CYCLES output; no attribution is available."
+        if json_format:
+            print_json({"status": "error", "error": msg})
+        else:
+            click.secho(msg, fg="red", err=True)
+        sys.exit(1)
+
+    if json_format:
+        print_json(
+            {
+                "status": "ok",
+                "model": model_path,
+                "target": target.name,
+                "passes": selected_passes,
+                "timed_count": timed_count,
+                "instrumented_mean_ms": result.mean_ms,
+                "total_cycles": result.total_cycles,
+                "attributed_cycles": result.attributed_cycles,
+                "attribution_coverage": result.attribution_coverage,
+                "kernels": [k.to_dict() for k in result.kernel_profiles],
+            }
+        )
+        return
+
+    print_header("Per-Kernel Cycle Attribution")
+    click.echo(f"Model:  {model_path}")
+    click.echo(f"Target: {target.name}")
+    click.echo(f"Passes: {', '.join(selected_passes) if selected_passes else 'none (FP32 baseline)'}")
+    click.echo("")
+    click.secho(
+        "Note: these cycles come from an INSTRUMENTED build (~9 cycles per kernel call).\n"
+        "      Use 'tatva baseline-test' for the latency figure to report.",
+        fg="yellow",
+    )
+    click.echo("")
+    click.echo(f"{'KERNEL':<28}{'CALLS':>8}{'CYCLES':>16}{'CYC/CALL':>14}{'SHARE':>9}")
+    click.echo("-" * 75)
+    for k in result.kernel_profiles:
+        share = (k.cycles / result.attributed_cycles * 100) if result.attributed_cycles else 0.0
+        click.echo(f"{k.name:<28}{k.calls:>8}{k.cycles:>16,}{k.cycles_per_call:>14,.1f}{share:>8.2f}%")
+    click.echo("-" * 75)
+    click.echo(
+        f"Attributed {result.attributed_cycles:,} of {result.total_cycles:,} measured cycles "
+        f"({result.attribution_coverage * 100:.3f}%)."
+    )
+    click.echo(
+        "The unattributed remainder is the harness itself: the run prologue, the DLTensor\n"
+        "pointer stores, and the rdcycle pair bracketing each call."
+    )
 
 
 @cli.command("gui")

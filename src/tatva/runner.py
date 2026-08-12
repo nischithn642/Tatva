@@ -30,6 +30,7 @@ __all__ = [
     "CompilationError",
     "CompiledArtifact",
     "ExecutionEnvironment",
+    "KernelProfile",
     "MeasurementResult",
     "bundled_tools_dir",
     "compile_model",
@@ -208,7 +209,7 @@ MAIN_C_BENCHMARK = """
 #include "model_info.h"
 
 extern int32_t tvmgen_default_run(@TATVA_RUN_PARAMS@);
-
+@TATVA_PROFILE_DECLS@
 static inline uint64_t read_cycles(void) {
     uint64_t cycles;
 #if __riscv_xlen == 64
@@ -304,7 +305,7 @@ int main(void) {
     for (int i = 0; i < WARMUP_COUNT; i++) {
         tvmgen_default_run(@TATVA_RUN_ARGS@);
     }
-
+@TATVA_PROFILE_RESET@
     // Timed runs
     for (int i = 0; i < TIMED_COUNT; i++) {
         uint64_t start = read_cycles();
@@ -314,7 +315,7 @@ int main(void) {
         sbi_print_uint(end - start);
         sbi_print("\\n");
     }
-
+@TATVA_PROFILE_REPORT@
     // Print first 5 output values for correctness verification
     sbi_print("FIRST_LOGITS: ");
     for (int i = 0; i < 5 && i < OUTPUT_SIZE; i++) {
@@ -329,6 +330,135 @@ int main(void) {
     return 0;
 }
 """
+
+# ---------------------------------------------------------------------------
+# Per-kernel cycle attribution.
+#
+# These three fragments fill the @TATVA_PROFILE_*@ markers in MAIN_C_BENCHMARK.
+# When compile_model(profile=False) -- the default -- every marker is replaced
+# with the empty string. Each marker sits alone on a line that used to be blank,
+# so the unprofiled main.c is byte-for-byte what it was before this feature
+# existed. That is the whole point of the marker placement: the measurement you
+# ship must not be the measurement you changed.
+# ---------------------------------------------------------------------------
+
+PROFILE_MAIN_DECLS = """
+// Per-kernel accumulators live in model_run.c, next to the call sites they time.
+extern uint64_t tatva_kernel_cycles[];
+extern uint64_t tatva_kernel_calls[];
+extern const char* const tatva_kernel_names[];
+extern const int tatva_kernel_count;
+extern void tatva_profile_reset(void);
+"""
+
+# Warm-up exists to fault in the workspace bump-allocator and settle the caches;
+# attributing those runs to the kernels would inflate whichever kernel happens to
+# run first. Reset here so the per-kernel totals cover exactly the same TIMED_COUNT
+# iterations the RUN_CYCLES samples cover, which is what makes the two comparable.
+PROFILE_MAIN_RESET = """
+    tatva_profile_reset();
+"""
+
+# One line per distinct kernel, not per call site: output size is bounded by the
+# number of PrimFuncs TVM emitted, not by how many times the graph calls them.
+PROFILE_MAIN_REPORT = """
+    for (int k = 0; k < tatva_kernel_count; k++) {
+        sbi_print("KERNEL_CYCLES: ");
+        sbi_print_uint((uint64_t)k);
+        sbi_print(" ");
+        sbi_print(tatva_kernel_names[k]);
+        sbi_print(" ");
+        sbi_print_uint(tatva_kernel_calls[k]);
+        sbi_print(" ");
+        sbi_print_uint(tatva_kernel_cycles[k]);
+        sbi_print("\\n");
+    }
+"""
+
+
+def _profile_prologue(kernel_order: list[str]) -> list[str]:
+    """
+    The accumulator table and cycle reader that model_run.c's call sites use.
+
+    Accumulators are uint64_t because rdcycle is a 64-bit counter; a 32-bit total
+    wraps after ~43 seconds of simulated time at the nominal 100 MHz, which a long
+    timed loop on a real model will reach.
+
+    Nothing zeroes .bss on this target -- start.S sets the stack pointer and tails
+    straight into main -- so the table is not assumed to start at zero. main.c calls
+    tatva_profile_reset() after the warm-up loop, and that call, not the loader, is
+    what makes the counts trustworthy.
+    """
+    count = len(kernel_order)
+    names = ",\n".join(f'    "{name}"' for name in kernel_order)
+    return [
+        "// --- Per-kernel cycle attribution (compile_model(profile=True)) ---",
+        "static inline uint64_t tatva_read_cycles(void) {",
+        "    uint64_t cycles;",
+        "#if __riscv_xlen == 64",
+        '    asm volatile ("rdcycle %0" : "=r" (cycles) : : "memory");',
+        "#else",
+        "    uint32_t cycle_h, cycle_l, cycle_h_again;",
+        "    do {",
+        '        asm volatile ("rdcycleh %0" : "=r" (cycle_h) : : "memory");',
+        '        asm volatile ("rdcycle %0" : "=r" (cycle_l) : : "memory");',
+        '        asm volatile ("rdcycleh %0" : "=r" (cycle_h_again) : : "memory");',
+        "    } while (cycle_h != cycle_h_again);",
+        "    cycles = (((uint64_t)cycle_h) << 32) | cycle_l;",
+        "#endif",
+        "    return cycles;",
+        "}",
+        "",
+        f"#define TATVA_KERNEL_COUNT {count}",
+        "const int tatva_kernel_count = TATVA_KERNEL_COUNT;",
+        "uint64_t tatva_kernel_cycles[TATVA_KERNEL_COUNT] = {0};",
+        "uint64_t tatva_kernel_calls[TATVA_KERNEL_COUNT] = {0};",
+        "const char* const tatva_kernel_names[TATVA_KERNEL_COUNT] = {",
+        names,
+        "};",
+        "",
+        "void tatva_profile_reset(void) {",
+        "    for (int k = 0; k < TATVA_KERNEL_COUNT; k++) {",
+        "        tatva_kernel_cycles[k] = 0;",
+        "        tatva_kernel_calls[k] = 0;",
+        "    }",
+        "}",
+        "",
+    ]
+
+
+class KernelProfile:
+    """
+    Cycles attributed to one generated kernel over the timed runs.
+
+    `cycles` and `calls` are totals across all TIMED_COUNT iterations, not per-run
+    averages, because that is what the C side can accumulate without dividing on a
+    target that has no libm. Divide on the host, where it is cheap and visible.
+    """
+
+    __slots__ = ("calls", "cycles", "index", "name")
+
+    def __init__(self, index: int, name: str, calls: int, cycles: int):
+        self.index = index
+        self.name = name
+        self.calls = calls
+        self.cycles = cycles
+
+    @property
+    def cycles_per_call(self) -> float:
+        return self.cycles / self.calls if self.calls else 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "index": self.index,
+            "name": self.name,
+            "calls": self.calls,
+            "cycles": self.cycles,
+            "cycles_per_call": self.cycles_per_call,
+        }
+
+    def __repr__(self) -> str:
+        return f"KernelProfile(name={self.name!r}, calls={self.calls}, cycles={self.cycles})"
 
 
 class ExecutionEnvironment(Enum):
@@ -360,6 +490,8 @@ class MeasurementResult:
         raw_samples_ms: list[float],
         raw_output: str = "",
         units: str = "ms",
+        kernel_profiles: list["KernelProfile"] | None = None,
+        total_cycles: int = 0,
     ):
         self.environment = environment
         self.simulated = simulated
@@ -369,6 +501,30 @@ class MeasurementResult:
         self.raw_samples_ms = raw_samples_ms
         self.raw_output = raw_output
         self.units = units
+        # Empty unless the artifact was built with compile_model(profile=True).
+        self.kernel_profiles = kernel_profiles or []
+        # Sum of the RUN_CYCLES samples, i.e. the same window the kernel totals cover.
+        self.total_cycles = total_cycles
+
+    @property
+    def attributed_cycles(self) -> int:
+        """Cycles the per-kernel table accounts for. 0 when profiling was off."""
+        return sum(k.cycles for k in self.kernel_profiles)
+
+    @property
+    def attribution_coverage(self) -> float:
+        """
+        Fraction of the measured window the per-kernel table explains.
+
+        Exactly 0.0 when the artifact was built unprofiled -- there is no table, so
+        nothing is attributed. Read it together with `kernel_profiles`: an empty list
+        means "profiling was off", not "the table explained nothing".
+
+        When profiling was on it lands slightly below 1.0. The residue is
+        tvmgen_default_run's own prologue, the DLTensor pointer stores, and the
+        read_cycles pair that brackets each call.
+        """
+        return self.attributed_cycles / self.total_cycles if self.total_cycles else 0.0
 
     def to_json(self) -> str:
         """
@@ -383,6 +539,10 @@ class MeasurementResult:
                 "p95_ms": self.p95_ms,
                 "raw_samples_ms": self.raw_samples_ms,
                 "units": self.units,
+                "total_cycles": self.total_cycles,
+                "attributed_cycles": self.attributed_cycles,
+                "attribution_coverage": self.attribution_coverage,
+                "kernel_profiles": [k.to_dict() for k in self.kernel_profiles],
             },
             indent=2,
         )
@@ -715,16 +875,33 @@ SOFTMAX_VECTOR = _SOFTMAX_HEADER + """
     }
     max_val = __riscv_vfmv_f_s_f32m1_f32(v_max);
 
-    // RVV 1.0 Vector Exponent & Sum Accumulation
+    // RVV 1.0 Vector Exponent & Sum Accumulation.
+    //
+    // The -15.0f clamp is not an optimization, it is what keeps the Schraudolph
+    // trick in range. Once (x - max) drops below about -88 the integer
+    // (x-max)*12102203 + 1065353216 goes negative, and reinterpreting a negative
+    // int32 as a float yields a NaN or a large NEGATIVE "exponential" that poisons
+    // the sum and inverts the sign of the entire row. SOFTMAX_SCALAR guards this
+    // with `if (val < -15.0f)`; the vector path must apply the identical predicate
+    // to the *unscaled* difference, hence vmflt + a vfmerge of +0.0f. Clamping does
+    // cost a little accuracy against a true exponential for (x - max) in (-88, -15),
+    // where the unclamped path returned a small but correct value -- that is the
+    // price of matching the scalar kernel, and it is bounded by ~3e-7 per lane.
+    //
+    // vfmacc rather than vfmul + vfadd: GCC contracts the scalar
+    // `val * 12102203.0f + 1065353216.0f` into a single fmadd.s, and two separate
+    // roundings disagree with one fused rounding by 1 ULP on ~6% of lanes.
     vfloat32m1_t v_sum = __riscv_vfmv_s_f_f32m1(0.0f, 1);
     for (int32_t k = 0; k < cols; k += vl) {
       vl = __riscv_vsetvl_e32m1(cols - k);
       vfloat32m1_t v_in = __riscv_vle32_v_f32m1(in_row + k, vl);
       vfloat32m1_t v_diff = __riscv_vfsub_vf_f32m1(v_in, max_val, vl);
-      vfloat32m1_t v_scaled = __riscv_vfmul_vf_f32m1(v_diff, 12102203.0f, vl);
-      vfloat32m1_t v_offset = __riscv_vfadd_vf_f32m1(v_scaled, 1065353216.0f, vl);
-      vint32m1_t v_int = __riscv_vfcvt_x_f_v_i32m1(v_offset, vl);
+      vbool32_t v_underflow = __riscv_vmflt_vf_f32m1_b32(v_diff, -15.0f, vl);
+      vfloat32m1_t v_base = __riscv_vfmv_v_f_f32m1(1065353216.0f, vl);
+      vfloat32m1_t v_offset = __riscv_vfmacc_vf_f32m1(v_base, 12102203.0f, v_diff, vl);
+      vint32m1_t v_int = __riscv_vfcvt_rtz_x_f_v_i32m1(v_offset, vl);
       vfloat32m1_t v_exp = __riscv_vreinterpret_v_i32m1_f32m1(v_int);
+      v_exp = __riscv_vfmerge_vfm_f32m1(v_exp, 0.0f, v_underflow, vl);
       __riscv_vse32_v_f32m1(local_exp + k, v_exp, vl);
       v_sum = __riscv_vfredusum_vs_f32m1_f32m1(v_exp, v_sum, vl);
     }
@@ -907,10 +1084,17 @@ def compile_model(
     output_dir: str | None = None,
     warmup_count: int = 3,
     timed_count: int = 10,
+    profile: bool = False,
 ) -> CompiledArtifact:
     """
     Compiles a ModelIR module to C code via TVM Relax, maps operations and weights
     to static variables, writes bare-metal wrappers, and cross-compiles to a RISC-V ELF.
+
+    Set `profile=True` to bracket every generated kernel call with rdcycle and print a
+    `KERNEL_CYCLES:` line per kernel, which run_and_measure turns into MeasurementResult
+    .kernel_profiles. It is off by default and the generated sources are byte-identical
+    to the unprofiled build when it is off, so the number TATVA reports as the model's
+    latency is never a number measured with the profiler switched on.
     """
     import tvm
     import tvm_ffi
@@ -1083,17 +1267,28 @@ def compile_model(
     ]
 
     declared_funcs = set()
+    # Same predicate as the call-site emission below, so the profile index space and
+    # the call sites can never disagree about which kernels exist. Execution order,
+    # not sorted order, because a profile is read against the shape of the graph.
+    kernel_order: list[str] = []
     for block in func.body.blocks:
         for binding in block.bindings:
             if isinstance(binding.value, relax.Call) and isinstance(binding.value.args[0], tvm.ir.GlobalVar):
                 func_name = binding.value.args[0].name_hint
+                if func_name not in declared_funcs:
+                    kernel_order.append(func_name)
                 declared_funcs.add(func_name)
+
+    kernel_index = {name: i for i, name in enumerate(kernel_order)}
 
     for func_name in sorted(declared_funcs):
         model_run_lines.append(
             f"extern int32_t __tvm_ffi_{func_name}(void* self_handle, void* args, int32_t num_args, void* result);"
         )
     model_run_lines.append("")
+
+    if profile:
+        model_run_lines.extend(_profile_prologue(kernel_order))
 
     for info in tensors_mapped.values():
         shape_str = ", ".join(str(x) for x in info["shape"]) or "1"
@@ -1257,9 +1452,27 @@ def compile_model(
                         f"    args[{idx}].type_index = 0;",
                     ]
                 )
+            if profile:
+                # The timer brackets the call and nothing else. The return-code check
+                # moves below the second read so error handling is not inside the
+                # measured window, and the accumulate happens before the early return
+                # so a failing kernel still reports the cycles it burned.
+                k = kernel_index[func_name]
+                model_run_lines.extend(
+                    [
+                        "    uint64_t tatva_t0 = tatva_read_cycles();",
+                        f"    int32_t tatva_rc = {ffi_name}(NULL, args, {num_args}, NULL);",
+                        f"    tatva_kernel_cycles[{k}] += tatva_read_cycles() - tatva_t0;",
+                        f"    tatva_kernel_calls[{k}] += 1;",
+                    ]
+                )
+                tatva_check = "    if (tatva_rc != 0) {"
+            else:
+                tatva_check = f"    if ({ffi_name}(NULL, args, {num_args}, NULL) != 0) {{"
+
             model_run_lines.extend(
                 [
-                    f"    if ({ffi_name}(NULL, args, {num_args}, NULL) != 0) {{",
+                    tatva_check,
                     f'        sbi_print("Failed call_tir: {func_name}\\n");',
                     "        return -1;",
                     "    }",
@@ -1346,6 +1559,9 @@ def compile_model(
         .replace("@TATVA_IO_INIT@", "\n".join(io_init_lines))
         .replace("WARMUP_COUNT", str(warmup_count))
         .replace("TIMED_COUNT", str(timed_count))
+        .replace("@TATVA_PROFILE_DECLS@", PROFILE_MAIN_DECLS if profile else "")
+        .replace("@TATVA_PROFILE_RESET@", PROFILE_MAIN_RESET if profile else "")
+        .replace("@TATVA_PROFILE_REPORT@", PROFILE_MAIN_REPORT if profile else "")
     )
     with open(os.path.join(build_dir, "main.c"), "w") as f:
         f.write(main_c_content)
@@ -1446,11 +1662,32 @@ def run_and_measure(
 
     # Parse RUN_CYCLES
     cycle_samples = []
+    kernel_profiles: list[KernelProfile] = []
     for line in res.stdout.splitlines():
         if "RUN_CYCLES:" in line:
             parts = line.strip().split(":")
             if len(parts) >= 2:
                 cycle_samples.append(int(parts[1].strip()))
+        elif "KERNEL_CYCLES:" in line:
+            # "KERNEL_CYCLES: <index> <name> <calls> <cycles>". Split on the tag rather
+            # than on ':' so a kernel name never has to be free of colons, and require
+            # exactly four fields so a torn line from the UART is dropped, not guessed at.
+            fields = line.split("KERNEL_CYCLES:", 1)[1].split()
+            if len(fields) == 4:
+                try:
+                    kernel_profiles.append(
+                        KernelProfile(
+                            index=int(fields[0]),
+                            name=fields[1],
+                            calls=int(fields[2]),
+                            cycles=int(fields[3]),
+                        )
+                    )
+                except ValueError:
+                    continue
+
+    # Heaviest first: the reason to open a profile is to find what to optimise.
+    kernel_profiles.sort(key=lambda k: k.cycles, reverse=True)
 
     if not cycle_samples:
         raise RuntimeError(f"No latency metrics found in QEMU output:\n{res.stdout}")
@@ -1470,6 +1707,8 @@ def run_and_measure(
         p95_ms=p95_ms,
         raw_samples_ms=ms_samples,
         raw_output=res.stdout,
+        kernel_profiles=kernel_profiles,
+        total_cycles=sum(cycle_samples),
     )
 
 

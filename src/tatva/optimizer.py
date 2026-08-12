@@ -144,6 +144,58 @@ def _weight_scale(arr: np.ndarray) -> float:
     return peak / INT8_QMAX
 
 
+def _fold_fake_quant(arr: np.ndarray, scale: float) -> np.ndarray:
+    """
+    Evaluate a quantize -> dequantize pair on a constant tensor at compile time.
+
+    Reproduces in float32 what relax.quantize and relax.dequantize lower to in the
+    C backend TATVA cross-compiles:
+
+        quantize:    v = roundf(x / scale)
+                     v = v < 127.0f ? v : 127.0f
+                     q = (int8_t)(v > -128.0f ? v : -128.0f)
+        dequantize:  out = (float)(int32_t)q * scale
+
+    Two details are load-bearing and neither is what the obvious implementation does.
+
+    C's roundf() rounds halves away from zero while numpy.round rounds them to even,
+    so the ties are corrected explicitly rather than delegated. That is not a
+    hypothetical difference: TVM's own LLVM host backend lowers te.round to a
+    half-to-even instruction, so relax.transform.FoldConstant would fold this graph
+    differently from the way the shipped RISC-V binary computes it. The tempting
+    one-liner floor(|x| + 0.5) is wrong for a second, independent reason -- it
+    double-rounds, and for x = 0.49999997f (the float32 just below 0.5) the float32
+    sum reaches 1.0f, so floor returns 1 where roundf returns 0.
+
+    And the clipping uses np.where rather than np.clip so the comparison order matches
+    the emitted ternaries. It only shows up on non-finite input -- a NaN weight clips
+    to 127 on target, where np.minimum would propagate the NaN into an out-of-range
+    int8 cast -- but a quantizer that disagrees with its own kernel about edge cases is
+    a bug waiting for a model that has them.
+
+    Folding against the C semantics rather than the host's is what keeps the hoisted
+    build close to the runtime one it replaces. It is NOT bit-identical, and the
+    reason is worth knowing: TVM's C codegen prints the scale with %.6e, so the
+    generated binary divides by a slightly different float32 than `scale`. Measured on
+    models/model.onnx, one logit moves 0.221983 -> 0.221984 -- three orders of
+    magnitude inside the 0.05 MSE tolerance compare_configs enforces. Round `scale`
+    through '%.6e' first if bit-identical output against a pre-hoist build is ever
+    required; that is a printf artifact of one backend, so it is not the default.
+    """
+    s = np.float32(scale)
+    scaled = arr.astype(np.float32) / s
+    # Round normally, then override the exact ties to go away from zero.
+    with np.errstate(invalid="ignore"):
+        ties = np.abs(scaled - np.trunc(scaled)) == np.float32(0.5)
+    rounded = np.where(
+        ties, np.trunc(scaled) + np.copysign(np.float32(1.0), scaled), np.round(scaled)
+    ).astype(np.float32)
+    clipped = np.where(rounded < np.float32(127.0), rounded, np.float32(127.0))
+    clipped = np.where(clipped > np.float32(-128.0), clipped, np.float32(-128.0))
+    q = clipped.astype(np.float32).astype(np.int8)
+    return (q.astype(np.int32).astype(np.float32) * s).astype(np.float32)
+
+
 def quantize(model_ir: ModelIR, activation_scale: float | None = None) -> ModelIR:
     """
     Insert INT8 Quantize-Dequantize pairs around the inputs of MatMul and Dense.
@@ -175,6 +227,7 @@ def quantize(model_ir: ModelIR, activation_scale: float | None = None) -> ModelI
             )
 
     weight_scales: list[float] = []
+    folded_weight_scales: list[float] = []
 
     @relax.expr_functor.mutator
     class QuantizationMutator(relax.PyExprMutator):
@@ -201,19 +254,46 @@ def quantize(model_ir: ModelIR, activation_scale: float | None = None) -> ModelI
                 # A non-constant right-hand side (batched attention matmul) has no
                 # values to measure here, so it falls back to the activation scale --
                 # both sides of that product are activations anyway.
-                wt_scale = _weight_scale(arg1.data.numpy()) if isinstance(arg1, relax.Constant) else act_scale
+                wt_arr = arg1.data.numpy() if isinstance(arg1, relax.Constant) else None
+                wt_scale = _weight_scale(wt_arr) if wt_arr is not None else act_scale
                 weight_scales.append(wt_scale)
 
-                scale1 = relax.const(wt_scale, "float32")
-                zp1 = relax.const(0, "int32")
-                q1 = self.builder_.emit(
-                    relax.op.quantize(arg1, scale1, zp1, out_dtype="int8"),
-                    name_hint="quant_wt"
-                )
-                dq1 = self.builder_.emit(
-                    relax.op.dequantize(q1, scale1, zp1, out_dtype="float32"),
-                    name_hint="dequant_wt"
-                )
+                if wt_arr is not None:
+                    # The weight is known at compile time, so its quantize/dequantize
+                    # pair is a constant expression. Evaluating it here instead of
+                    # re-deriving the same bytes on every inference is the single
+                    # largest cost in this pass: on models/model_pretrained.onnx these
+                    # constants are 76.7% of every element the quantizer touches, and
+                    # the generated binary was paying for all of them on every call.
+                    #
+                    # Both halves fold, not just the quantize. What the matmul consumes
+                    # is the dequantized float32 tensor, so that is what is emitted: a
+                    # float32 constant whose values have been round-tripped through
+                    # int8. The arithmetic the model sees is unchanged -- this is the
+                    # same fake-quant as before -- but the weight leg now costs nothing
+                    # at inference time.
+                    #
+                    # Note what this does not do. The weights stay float32 on the
+                    # device, so this buys latency and activation RAM, not flash. A
+                    # hoisted weight occupies exactly the bytes it did before the
+                    # quantizer ran; anything that reports this pass as a footprint
+                    # reduction is reporting a number this code does not deliver.
+                    folded_weight_scales.append(wt_scale)
+                    dq1 = relax.const(_fold_fake_quant(wt_arr, wt_scale), "float32")
+                else:
+                    # A computed right-hand side -- the batched attention matmul, whose
+                    # second operand is an activation -- has no compile-time value, so
+                    # it still has to be quantized at runtime.
+                    scale1 = relax.const(wt_scale, "float32")
+                    zp1 = relax.const(0, "int32")
+                    q1 = self.builder_.emit(
+                        relax.op.quantize(arg1, scale1, zp1, out_dtype="int8"),
+                        name_hint="quant_wt"
+                    )
+                    dq1 = self.builder_.emit(
+                        relax.op.dequantize(q1, scale1, zp1, out_dtype="float32"),
+                        name_hint="dequant_wt"
+                    )
 
                 return relax.Call(call.op, [dq0, dq1], call.attrs, call.sinfo_args, call.span)
 
@@ -241,6 +321,7 @@ def quantize(model_ir: ModelIR, activation_scale: float | None = None) -> ModelI
     metadata["activation_scale_source"] = act_source
     metadata["weight_scales"] = weight_scales
     metadata["quantized_ops"] = len(weight_scales)
+    metadata["hoisted_weight_ops"] = len(folded_weight_scales)
 
     return ModelIR(mutated_mod, None, metadata)
 
@@ -253,6 +334,19 @@ def check_softmax_fusable(model_ir: ModelIR) -> tuple[bool, str]:
     graph that violates either assumption yields a binary that runs faster and computes
     the wrong answer, which is worse than not optimizing at all -- so the pass refuses
     rather than guesses. Returns (fusable, reason_if_not).
+
+    There is deliberately NO input-range check here. The kernel's Schraudolph
+    exponential is only valid while (x - row_max) stays above about -88, but that
+    range is a property of runtime activations -- typically a matmul output plus an
+    additive attention mask -- and Relax StructInfo carries dtype and shape only, no
+    value bounds. A gate that cannot be evaluated is worse than no gate, because it
+    reads as protection that is not there. Safety is enforced in the kernel instead:
+    both SOFTMAX_SCALAR and SOFTMAX_VECTOR clamp (x - row_max) < -15.0f to exactly
+    zero, which bounds the Schraudolph integer to [883820160, 1065353216] -- always
+    positive, never saturating -- so every exp term is a positive float in roughly
+    [3.2e-7, 1.0], the row max always contributes exactly 1.0, and the sum is
+    therefore always >= 1.0. The kernel is unconditionally safe for any finite input
+    and needs no gate.
     """
     import tvm
     from tvm import relax

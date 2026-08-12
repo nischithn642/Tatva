@@ -42,8 +42,14 @@ def test_optimize_fuse_success(tmp_path) -> None:
 
 def test_optimize_quantize_warning(tmp_path) -> None:
     """
-    Assert that running tatva optimize with quantize pass prints a warning
-    notifying the user of the known dynamic quantization regression.
+    Assert that running tatva optimize with quantize pass warns that the pass is
+    expected to be slower -- and that it does so WITHOUT quoting a latency figure.
+
+    The warning used to read "~197ms vs ~161ms baseline". Neither number was ever
+    measured: 161.23 ms came from a `models/model.onnx` that is not in this
+    repository, and 197 ms was a literal in the source. The regression is real and
+    must still be announced, but from the structural reason -- values round-trip
+    through INT8 and the matmuls stay FP32 -- rather than from invented constants.
     """
     runner = CliRunner()
     model_path = "models/model.onnx"
@@ -63,10 +69,11 @@ def test_optimize_quantize_warning(tmp_path) -> None:
         ],
     )
 
-    assert (
-        "Warning: 'quantize' is an experimental pass with a known latency regression"
-        in result.output
-    )
+    assert "Warning: 'quantize' simulates INT8 numerics" in result.output
+    assert "SLOWER than the FP32 baseline" in result.output
+    # The specific fabricated constants must never come back.
+    for invented in ("197ms", "197.00", "161ms", "161.23"):
+        assert invented not in result.output, f"warning quotes the fabricated figure {invented}"
     assert result.exit_code == 0
     assert os.path.exists(os.path.join(out_dir, "model.elf"))
     assert os.path.exists(os.path.join(out_dir, "report.json"))

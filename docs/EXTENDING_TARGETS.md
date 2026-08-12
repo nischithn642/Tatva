@@ -94,7 +94,7 @@ Expected Output:
 === TATVA Baseline Execution Test ===
 Target Variant: RV64GCV
 Model:          models/model.onnx
-Simulated Latency: 161.2269 ms
+Simulated Latency: 0.73090 ms
 Parity Status:     PASS (MSE = 0.000000)
 ```
 

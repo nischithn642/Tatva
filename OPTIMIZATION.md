@@ -57,43 +57,106 @@ We replace standard Softmax with a custom register-based, single-pass implementa
 
 ## 2. Empirical Benchmark Results
 
-### Synthetic Attention Subgraph (`models/model.onnx`)
+> [!NOTE]
+> **Every row below was re-measured against the current repository.** An earlier
+> version of this table reported a 161.2269 ms baseline for `models/model.onnx`
+> from a 439.1 KB file. `models/model.onnx` is 17,719 bytes and has been since
+> the only commit that touched it, so those rows described a fixture that is not
+> in this repository and could not be reproduced. They have been replaced rather
+> than adjusted. Reproduce with `tatva baseline-test <model> --target RV64GC`;
+> per-kernel breakdowns come from `tatva profile <model>`.
+>
+> Parity MSE is measured against the **host ONNX Runtime** result, not against
+> TATVA's own FP32 binary — scoring an optimized build against the baseline build
+> would only measure how far the two RISC-V binaries drift from each other.
 
-| Configuration | ONNX Size | Binary Size | Simulated Cycles | Simulated Time (@ 100MHz) | Latency Gain | Parity (MSE) |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Baseline (FP32 + Standard Softmax)** | 439.1 KB | 583.0 KB | 16,122,694 | 161.2269 ms | Reference | 0.000000 |
-| **FP32 + Softmax Fusion** | 439.1 KB | 580.0 KB | **15,383,021** | **153.8302 ms** | **+4.59%** | 0.000000 |
-| **Quantized-Only (INT8 + Standard Softmax)** | 262.2 KB | 1,169.5 KB | 19,856,579 | 198.5658 ms | -23.16% | 0.000000 |
-| **Quantized + Softmax Fusion (Full)** | 262.2 KB | 1,166.5 KB | **18,989,000** | **189.8900 ms** | **+4.37%** *(vs INT8)* | 0.000000 |
+### Synthetic Attention Subgraph (`models/model.onnx`, 17,719 B, 14 kernels)
 
-### Pretrained BERT-tiny (`models/model_pretrained.onnx`)
+| Configuration | ELF Size | Simulated Cycles | Simulated Time (@ 100MHz) | Latency Gain | Parity (MSE) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Baseline (FP32 + Standard Softmax)** | 83,576 B | 73,090 | 0.73090 ms | Reference | 0.000000 |
+| **FP32 + Fast Softmax Kernel** | 79,288 B | **66,518** | **0.66518 ms** | **+8.99%** | 0.000029 |
+| **Simulated INT8 (Standard Softmax)** | 91,072 B | 114,488 | 1.14488 ms | **−56.64%** | 0.000050 |
+| **Simulated INT8 + Fast Softmax** | 86,896 B | 107,916 | 1.07916 ms | **−47.65%** | 0.000175 |
 
-| Configuration | ONNX Size | Binary Size | Simulated Cycles | Simulated Time (@ 100MHz) | Latency Gain | Parity (MSE) |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Baseline FP32 (Standard Softmax)** | 17.4 MB | 17.40 MB | 118,806,393 | 1,188.0639 ms | Reference | 0.000000 |
-| **FP32 + Softmax Fusion** | 17.4 MB | 17.40 MB | **118,540,094** | **1,185.4009 ms** | **+0.22%** | 0.000000 |
-| **INT8 Quantized (Standard Softmax)** | 4.7 MB | 4.76 MB | 141,416,865 | 1,414.1686 ms | -19.03% | 0.000364 |
-| **INT8 Quantized + Softmax Fusion** | 4.7 MB | 4.76 MB | **141,083,323** | **1,410.8332 ms** | **+0.24%** *(vs INT8)* | 0.000364 |
+### Pretrained BERT-tiny (`models/model_pretrained.onnx`, 17,607,002 B, 57 kernels)
+
+| Configuration | ELF Size | Simulated Cycles | Simulated Time (@ 100MHz) | Latency Gain | Parity (MSE) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Baseline (FP32 + Standard Softmax)** | 17,822,152 B | 118,806,414 | 1188.06414 ms | Reference | 0.000000 |
+| **FP32 + Fast Softmax Kernel** | 17,818,616 B | **118,658,484** | **1186.58484 ms** | **+0.12%** | 0.000001 |
+| **Simulated INT8 (Standard Softmax)** | 17,886,240 B | 123,291,353 | 1232.91353 ms | **−3.77%** | 0.036593 |
+| **Simulated INT8 + Fast Softmax** | 17,882,696 B | 123,144,896 | 1231.44896 ms | **−3.65%** | 0.031808 |
 
 ---
 
 ## 3. Honest Technical Analysis & Key Insights
 
-1. **Softmax Fusion Impact at Scale:**
-   - On small subgraphs (Model 1), Softmax fusion yields a **+4.59%** overall speedup.
-   - On full BERT-tiny (Model 4), the speedup shrinks to **+0.22%**.
-   - **Reason:** Softmax operates on query-key tensors of shape `(seq_len, seq_len)` = `(32, 32)`. When vocabulary embedding and dense matrix dimensions scale up 100x, heavy MatMul layers dominate overall runtime.
+1. **Fast-Softmax Impact Shrinks With Model Size:**
+   - On the small attention subgraph the fast softmax kernel is worth **+8.99%**.
+   - On full BERT-tiny it is worth **+0.12%**.
+   - **Reason:** softmax runs on `(seq_len, seq_len)` query-key tensors. As the
+     embedding and dense dimensions grow, MatMul dominates: per-kernel profiling
+     puts softmax at 109,340 of 729,410 attributed cycles (15.0%) on the small
+     model, so even eliminating it entirely could not have paid more than that.
 
-2. **Quantization Compression vs. Scalar CPU Latency Regression (Honest Findings):**
-   - **Footprint Compression:** Dynamic INT8 quantization reduces binary and storage size by **40% to 72%** (down to 4.7 MB from 17.4 MB on BERT-tiny), making it ideal for memory-constrained SRAM targets.
-   - **Latency Regression:** On scalar RISC-V cores (`rv64gc` without vector extensions), INT8 execution cycle count **increases by +19.0% to +23.1%**.
-   - **Root Cause:** Without RISC-V Vector Extensions (RVV) or Matrix extensions (RVP), dynamic dequantization scaling, zero-point shifts, and int8-to-int32 type casts must be emulated loop-by-loop in scalar software, adding more instructions than native float multiplication.
+2. **The INT8 Pass Is a Numerical Study, Not a Latency or Footprint Optimization.**
+
+   This is the single most important correction in this document. A previous
+   version claimed INT8 "reduces binary and storage size by **40% to 72%**" and
+   cost "+19.0% to +23.1%" in latency. Both figures are wrong, and the size claim
+   is wrong in the wrong direction:
+
+   - **Footprint: INT8 makes the binary *larger*.** 83,576 → 91,072 B (**+9.0%**)
+     on the small model and 17,822,152 → 17,886,240 B (**+0.36%**) on BERT-tiny.
+     The pass round-trips values through INT8 and computes in FP32, so the weights
+     stay FP32 on device and the extra quantize/dequantize kernels add code. The
+     emitted `weights.h` moves 72,079,605 → 71,906,733 B (**−0.24%**), not −72%.
+   - **Latency: INT8 is slower, and the profiler says exactly why.** On the small
+     model the regression is **+414,160 cycles**, of which `quantize` accounts for
+     339,730 (**82.0%**) and `dequantize` for 74,130 (**17.9%**) — **99.9% of the
+     total**. Every one of the 14 kernels shared with the FP32 build is *bit-identical*,
+     drift of exactly **0 cycles**, including `matmul` at 427,700 cycles in both builds.
+   - **The dominant kernel never becomes integer.** That `matmul` is unchanged is
+     the proof: this is fake-quantization (QDQ), so the MatMul still executes in
+     FP32 and gains nothing. The pass can only add work.
+   - **The same result holds at scale.** On BERT-tiny the regression is
+     **+44,854,330 cycles** against 46,192,150 cycles spent in the 16
+     quantize/dequantize kernels. That is *103%* of the delta — the shared kernels
+     got 1,345,360 cycles **faster**, almost all of it `erf`
+     (31,763,450 → 30,393,760), because quantized activations change its input
+     distribution. The overhead is therefore slightly larger than the net
+     regression, not smaller.
+   - **Why the quantize kernel is so expensive:** TVM lowers `relax.quantize` to a
+     divide plus `roundf()`. On this bare-metal target `roundf` is a non-inlined
+     libm call per element, which is why `quantize` costs ~4.6x what `dequantize`
+     (a plain multiply) costs on the same tensors.
+
+   **What the pass is legitimately for:** measuring the accuracy cost of INT8
+   before committing to it. The MSE column is the deliverable — 0.036593 on
+   BERT-tiny against a 0.05 tolerance is a real, useful number.
+
+3. **Constant weights are folded at compile time.** Both halves of the QDQ pair on
+   a constant weight tensor are evaluated during compilation and replaced by a
+   single FP32 constant, so no device cycles are spent re-quantizing values that
+   cannot change. On BERT-tiny this covers 12 of the 18 quantized ops and removed
+   about 155.7 ms of the original regression. It reduces activation-workspace RAM
+   (global_pool 4,869,696 → 2,903,616 B), **not** flash — anything reporting this
+   as a footprint reduction is reporting a number this code does not deliver.
 
 ---
 
 ## 4. Tracked Optimization Issue
 
-- [ ] **Tracked Optimization Issue: Scalar Dequantization Overhead on RISC-V Bare-Metal**
+- [ ] **Tracked Optimization Issue: `quantize` Kernel Cost on RISC-V Bare-Metal**
   - **Status:** Open / Tracked
-  - **Description:** Compiling INT8 quantized models on scalar RISC-V (`rv64gc`) incurs a latency regression due to loop-by-loop software dequantization emulation.
-  - **Remediation Plan:** Introduce RISC-V Vector Extension (RVV) assembler intrinsics and vectorized TVM schedulers to parallelize offset scaling.
+  - **Description:** The `quantize` kernels are 82% of the INT8 latency regression
+    on the small model and the largest single group on BERT-tiny. The cost is
+    dominated by the per-element `roundf()` libm call TVM emits, not by the divide.
+  - **Remediation Plan:** Replace TVM's default lowering of `relax.quantize` with a
+    custom legalization that emits a hardware round-and-convert on targets that
+    have both RV64 and hardware floating point (`fcvt.l.s` is RV64-only), and
+    revisit integer MatMul under RVV, where a true int8×int8→int32 GEMM can pay for
+    itself. Measured on scalar `rv64gc`, a real integer GEMM is **12–14% slower**
+    than FP32 because the core has a hardware FPU and a single-instruction `fmadd.s`
+    — so integer MatMul is deliberately **not** enabled on scalar targets.

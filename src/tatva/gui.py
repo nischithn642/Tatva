@@ -2443,8 +2443,12 @@ class TatvaPyBridge:
                 "stage": "Optimization",
                 "name": "INT8 quantization",
                 "before": "FP32 weights and activations.",
-                "after": "INT8 symmetric weights with a host-calibrated activation scale.",
-                "reason": "Reduces weight memory and integer-izes the dominant matmuls.",
+                "after": "Values round-tripped through INT8, then computed in FP32.",
+                "reason": (
+                    "Measures what INT8 would cost in accuracy. It does not reduce "
+                    "footprint or latency: the weights stay FP32 on device and the "
+                    "matmuls stay FP32, so this pass only adds work."
+                ),
                 "impact": "Measured together with the other selected passes; see below.",
                 "validation": "Covered by the end-to-end parity check against host ONNX Runtime.",
                 "detail": "Activation scale calibrated on the host at the p99.9 percentile.",

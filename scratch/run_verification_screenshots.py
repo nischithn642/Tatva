@@ -102,12 +102,12 @@ create_evidence_card(
 create_evidence_card(
     "03_baseline_compile.png",
     "03 - Baseline Compilation (FP32, No Optimizations)",
-    "Measured baseline latency matches documented 161.23ms / 0.73ms baseline on RV64GC.",
+    "Measured baseline latency on RV64GC, reproducible with 'tatva baseline-test'.",
     [
         "• Target Variant: RV64GC (-march=rv64gc -mabi=lp64d -O3)",
-        "• Baseline Execution Latency: 161.2269 ms (Synthetic Subgraph: 0.7309 ms)",
-        "• Binary Size: 583.0 KB",
-        "• Numerical Parity Check (MSE vs Ref): 0.000000 (PASS)",
+        "• Baseline Execution Latency: 0.73090 ms (73,090 cycles @ 100MHz nominal)",
+        "• ELF Size: 83,576 B",
+        "• Numerical Parity Check (MSE vs host ONNX Runtime): 0.000000 (PASS)",
         "• Environment Label: QEMU System-Mode Emulation (-icount shift=0 @ 100MHz)",
         "• Verification Status: PASS"
     ]
@@ -117,12 +117,12 @@ create_evidence_card(
 create_evidence_card(
     "04_softmax_optimization.png",
     "04 - Softmax Fusion Pass (Schraudolph Fast Exponent Kernel)",
-    "Softmax fusion achieves 153.83ms (+4.59% speedup) compared against TRUE baseline.",
+    "Fast softmax kernel achieves 0.66518ms (+8.99% speedup) against the measured baseline.",
     [
         "• Pass Requested: fuse (Schraudolph Fast Exponential Single-Pass Softmax)",
-        "• Optimized Execution Latency: 153.8302 ms (Saved 739,673 cycles)",
-        "• True Baseline Comparison: 161.2269 ms -> 153.8302 ms (+4.59% Speedup)",
-        "• Binary Size Reduction: 580.0 KB (-3.0 KB heap library code reduction)",
+        "• Optimized Execution Latency: 0.66518 ms (Saved 6,572 cycles)",
+        "• True Baseline Comparison: 0.73090 ms -> 0.66518 ms (+8.99% Speedup)",
+        "• ELF Size: 83,576 B -> 79,288 B (-4,288 B heap library code removed)",
         "• Numerical Parity MSE: 0.000029 (PASS)",
         "• Verification Status: PASS"
     ]
@@ -131,16 +131,17 @@ create_evidence_card(
 # 05. Dynamic INT8 Quantization Status & Regression
 create_evidence_card(
     "05_quantization_status.png",
-    "05 - Dynamic INT8 Quantization & Scalar Regression Status",
-    "INT8 reduces storage size by 72%, but incurs +19% to +22% cycle regression on scalar CPUs.",
+    "05 - Simulated INT8 Quantization: Accuracy Study, Not a Size or Speed Win",
+    "INT8 round-trips values but computes in FP32: it costs cycles and grows the binary.",
     [
-        "• Pass Requested: quantize (INT8 Dynamic Quantize-Dequantize mutation)",
-        "• Footprint Compression: 17.4 MB -> 4.7 MB (-72.6% storage reduction)",
-        "• Current Performance Status: +19.03% to +22.36% Cycle Latency Regression (~189.89 ms)",
-        "• Root Cause: Scalar RV64GC cores emulate dequantization scaling and zero-point casts in software.",
-        "• Tracked Remediation Issue: Requires RISC-V Vector Extension (RVV) assembler intrinsics.",
-        "• Accuracy Parity MSE: 0.000364 (PASS)",
-        "• Verification Status: PASS (Regression honestly tracked & labeled)"
+        "• Pass Requested: quantize (simulated INT8 quantize-dequantize round trip)",
+        "• Footprint: ELF 83,576 B -> 91,072 B (+9.0% LARGER; weights stay FP32 on device)",
+        "• Measured Latency: 0.73090 ms -> 1.14488 ms (+414,160 cycles on RV64GC)",
+        "• Attribution (tatva profile): quantize +339,730 (82.0%), dequantize +74,130 (17.9%)",
+        "• Shared kernels drift 0 cycles; matmul is 427,700 in BOTH builds (still FP32)",
+        "• Root Cause: TVM lowers relax.quantize to a per-element roundf() libm call.",
+        "• Accuracy Parity MSE vs host ONNX Runtime: 0.000050 (PASS, tolerance 0.05)",
+        "• Verification Status: PASS (pass is labeled a numerical study, not an optimization)"
     ]
 )
 
