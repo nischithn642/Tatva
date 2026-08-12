@@ -29,12 +29,22 @@ Always use the project venv: **`.venv/Scripts/python.exe`**. A bare `python` lac
 
 ## 2. What is done and pushed
 
-Two commits are on `origin/beta-2.0`, working tree clean apart from section 3:
+Six commits are on `origin/beta-2.0`, working tree clean apart from section 3:
 
-- `3ace98d` — Phase 2: per-kernel profiling, and remove the fabricated INT8 numbers
-- `fb36f6b` — Ship TATVA-Stage-Guide.pdf from the spec, not from a hand copy
+- `dd8d970` — Phase 2: per-kernel profiling, and remove the fabricated INT8 numbers
+- `46ca620` — Ship TATVA-Stage-Guide.pdf from the spec, not from a hand copy
+- `1d8d8f1` — Add HANDOFF.md, and stage the guide into the app root rather than _internal
+- `58d8782` — HANDOFF: record the rebuilt artifacts, both verified
+- `95e882c` — Add release notes for v2.0.0-beta.1
+- the sixth is this file's own hash refresh; quoting its hash inside itself is
+  circular, so match it by subject: "HANDOFF: refresh the commit hashes and record
+  the history rewrites"
 
 Verified at that point: **445 tests pass**, `ruff check src/ tests/` clean.
+
+**Every hash in this document is post-rewrite.** History was rewritten twice, so any
+hash quoted in an older note or transcript is dead. Resolve commits by subject line,
+not by hash. See "History rewrites" below.
 
 ### Phase 2 result, in short
 
@@ -65,6 +75,35 @@ prologue and brackets each kernel call site in `model_run.c` with an rdcycle pai
 `MeasurementResult.kernel_profiles`. It is **off by default and emits byte-identical
 sources when off**, so no reported latency is ever measured with instrumentation on.
 Surface it with `tatva profile <model>`. Covered by `tests/test_profiling.py`.
+
+### History rewrites
+
+`beta-2.0` and `main` were rewritten twice on 2026-08-12, at the repository owner's
+request, so that the GitHub contributor list shows one name:
+
+1. **Author rewrite.** The root commit carried a second author's email. `git filter-branch
+   --env-filter` remapped every commit to `nischithn642 <nischithn642@gmail.com>`.
+2. **Message rewrite.** `git filter-branch --msg-filter` stripped the
+   `Co-Authored-By: ... <noreply@anthropic.com>` trailer from all 14 commits that had one.
+
+Both were verified before pushing: trees byte-identical to the pre-rewrite state (empty
+`git diff`), commit counts unchanged at 15 and 10, exactly one author identity remaining.
+**Content was never touched — only authorship metadata and trailers.**
+
+Consequences a new session must know:
+
+- **All commit hashes changed, twice.** Any hash from an older note is dead. Match on
+  subject lines.
+- The GitHub repository was deleted and recreated afterwards. GitHub's contributor
+  sidebar is a server-side cache that does not recompute on push, and it still listed
+  the removed identities in incognito with cookies cleared; a fresh repository was the
+  only way to clear it. Nothing was lost — the repo had 0 stars, forks, watchers,
+  issues, PRs and releases.
+- **Do not add `Co-Authored-By` trailers to new commits in this repository.** They would
+  put a second contributor back in the sidebar, and clearing it costs another rewrite.
+- Recovery bundles, both on the Desktop, outside the repo:
+  `tatva-backup-pre-rewrite.bundle` (before the author rewrite) and
+  `tatva-backup-pre-coauthor-strip.bundle` (before the message rewrite).
 
 ---
 
@@ -122,10 +161,10 @@ for a clean freeze (~9 min).
 hand** and was referenced by nothing, so a PyInstaller run rewrote that folder and
 dropped it.
 
-`fb36f6b` restored it via the spec's `datas`, which was **half right**: PyInstaller 6
+`46ca620` restored it via the spec's `datas`, which was **half right**: PyInstaller 6
 puts `datas` under `_internal/`, so a document meant for a person to read landed among
 the DLLs. The verifier missed that because it matches on `endswith`, so the file
-passes from anywhere in the payload. `dc6b088` finished the job — out of the spec, and
+passes from anywhere in the payload. `1d8d8f1` finished the job — out of the spec, and
 into `stage_root_docs()` in `build_exe.py`, which copies it to the app root beside
 `README.txt`.
 
