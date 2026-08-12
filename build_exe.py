@@ -417,11 +417,36 @@ does.
         fh.write(text)
 
 
+def stage_root_docs() -> None:
+    """
+    Copy the reader-facing docs into the app root, beside README.txt.
+
+    These cannot go through the spec's datas list. PyInstaller puts datas under
+    _internal/, which is the right place for files the app opens itself and the
+    wrong place for a PDF a person is meant to find and read.
+
+    This exists because the guide used to be copied in by hand. A later
+    PyInstaller run rewrote dist/TATVA and dropped it, and the installer shipped
+    one file lighter than the release before it -- caught only by
+    build_installer.py's verify step, which matches on the filename and would
+    have accepted the file from anywhere.
+    """
+    for doc in ("TATVA-Stage-Guide.pdf",):
+        source = os.path.join(ROOT, doc)
+        if os.path.exists(source):
+            shutil.copy2(source, os.path.join(APP_DIR, doc))
+        else:
+            # Not fatal: build_installer.py reports it as MISSING, which is the
+            # single place that check belongs.
+            print(f"  note       {doc} is not in the repository root; not staged")
+
+
 def make_zip() -> str:
     if not os.path.isdir(APP_DIR):
         sys.exit(f"{APP_DIR} does not exist. Build first (drop --zip-only).")
 
     write_readme()
+    stage_root_docs()
     zip_path = os.path.join(DIST, f"TATVA-{zip_slug()}-windows.zip")
     if os.path.exists(zip_path):
         os.remove(zip_path)
