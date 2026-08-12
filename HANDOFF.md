@@ -61,7 +61,7 @@ with real data. On `models/model.onnx` the INT8 regression is **+414,160 cycles*
 kernels shared with the FP32 build drifted **exactly 0 cycles**, `matmul` included at
 427,700 in both. That zero proves the pass is fake-quantization (QDQ): the MatMul
 never becomes integer, so the pass can only add work. INT8 also makes the ELF
-**larger** (83,576 → 91,072 B), the opposite of the "40–72% smaller" previously
+**larger** (83,600 → 91,104 B), the opposite of the "40–72% smaller" previously
 claimed.
 
 Measured tables live in `OPTIMIZATION.md` §2. Do not restate any performance number

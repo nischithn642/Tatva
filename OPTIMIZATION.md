@@ -74,19 +74,26 @@ We replace standard Softmax with a custom register-based, single-pass implementa
 
 | Configuration | ELF Size | Simulated Cycles | Simulated Time (@ 100MHz) | Latency Gain | Parity (MSE) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Baseline (FP32 + Standard Softmax)** | 83,576 B | 73,090 | 0.73090 ms | Reference | 0.000000 |
-| **FP32 + Fast Softmax Kernel** | 79,288 B | **66,518** | **0.66518 ms** | **+8.99%** | 0.000029 |
-| **Simulated INT8 (Standard Softmax)** | 91,072 B | 114,488 | 1.14488 ms | **−56.64%** | 0.000050 |
-| **Simulated INT8 + Fast Softmax** | 86,896 B | 107,916 | 1.07916 ms | **−47.65%** | 0.000175 |
+| **Baseline (FP32 + Standard Softmax)** | 83,600 B | 73,090 | 0.73090 ms | Reference | 0.000000 |
+| **FP32 + Fast Softmax Kernel** | 79,320 B | **66,518** | **0.66518 ms** | **+8.99%** | 0.000029 |
+| **Simulated INT8 (Standard Softmax)** | 91,104 B | 114,488 | 1.14488 ms | **−56.64%** | 0.000050 |
+| **Simulated INT8 + Fast Softmax** | 86,936 B | 107,916 | 1.07916 ms | **−47.65%** | 0.000175 |
 
 ### Pretrained BERT-tiny (`models/model_pretrained.onnx`, 17,607,002 B, 57 kernels)
 
 | Configuration | ELF Size | Simulated Cycles | Simulated Time (@ 100MHz) | Latency Gain | Parity (MSE) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Baseline (FP32 + Standard Softmax)** | 17,822,152 B | 118,806,414 | 1188.06414 ms | Reference | 0.000000 |
-| **FP32 + Fast Softmax Kernel** | 17,818,616 B | **118,658,484** | **1186.58484 ms** | **+0.12%** | 0.000001 |
-| **Simulated INT8 (Standard Softmax)** | 17,886,240 B | 123,291,353 | 1232.91353 ms | **−3.77%** | 0.036593 |
-| **Simulated INT8 + Fast Softmax** | 17,882,696 B | 123,144,896 | 1231.44896 ms | **−3.65%** | 0.031808 |
+| **Baseline (FP32 + Standard Softmax)** | 17,822,208 B | 118,806,414 | 1188.06414 ms | Reference | 0.000000 |
+| **FP32 + Fast Softmax Kernel** | 17,818,680 B | **118,658,484** | **1186.58484 ms** | **+0.12%** | 0.000001 |
+| **Simulated INT8 (Standard Softmax)** | 17,886,288 B | 123,291,353 | 1232.91353 ms | **−3.77%** | 0.036593 |
+| **Simulated INT8 + Fast Softmax** | 17,882,744 B | 123,144,896 | 1231.44896 ms | **−3.65%** | 0.031808 |
+
+> **Re-measured after the binary-weights change (beta.2).** Weights now reach the
+> ELF as a `.incbin` blob rather than as a C array initializer, so every ELF in
+> both tables grew by 24–64 B of section alignment padding. The cycle counts did
+> not move by a single instruction: the generated kernels are unchanged, only the
+> way their constants are placed. The figures above are the post-change ones and
+> reproduce byte-for-byte across repeat builds.
 
 ---
 
@@ -107,11 +114,15 @@ We replace standard Softmax with a custom register-based, single-pass implementa
    cost "+19.0% to +23.1%" in latency. Both figures are wrong, and the size claim
    is wrong in the wrong direction:
 
-   - **Footprint: INT8 makes the binary *larger*.** 83,576 → 91,072 B (**+9.0%**)
-     on the small model and 17,822,152 → 17,886,240 B (**+0.36%**) on BERT-tiny.
+   - **Footprint: INT8 makes the binary *larger*.** 83,600 → 91,104 B (**+9.0%**)
+     on the small model and 17,822,208 → 17,886,288 B (**+0.36%**) on BERT-tiny.
      The pass round-trips values through INT8 and computes in FP32, so the weights
      stay FP32 on device and the extra quantize/dequantize kernels add code. The
-     emitted `weights.h` moves 72,079,605 → 71,906,733 B (**−0.24%**), not −72%.
+     weight blob makes this unambiguous: on BERT-tiny `weights.bin` is **17,548,872 B
+     in both builds**, the same size to the byte, though not the same bytes — the
+     round-trip perturbs the values but every one of them is still stored as an
+     FP32 word. Nothing is packed to int8 anywhere on device, so there is no −72%
+     to be had; there is no reduction at all.
    - **Latency: INT8 is slower, and the profiler says exactly why.** On the small
      model the regression is **+414,160 cycles**, of which `quantize` accounts for
      339,730 (**82.0%**) and `dequantize` for 74,130 (**17.9%**) — **99.9% of the

@@ -60,19 +60,21 @@
     </div>
 
     <nav class="nav" id="nav">
-      <p class="nav-head">Workspace</p>
-      <div class="nav-group">
+      <button class="nav-head" type="button" aria-expanded="true" aria-controls="g-workspace"><span class="caret" aria-hidden="true"></span>Workspace</button>
+      <div class="nav-group" id="g-workspace">
         <button class="nav-item active" id="nav-overview" data-view="overview">
           <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-grid"/></svg>
           Overview
         </button>
       </div>
 
-      <p class="nav-head">Compile Pipeline</p>
-      <div class="nav-group" id="nav-stages"><!-- built by studio.js from STAGES --></div>
+      <button class="nav-head" type="button" aria-expanded="true" aria-controls="g-pipeline"><span class="caret" aria-hidden="true"></span>Compile Pipeline</button>
+      <div class="nav-group" id="g-pipeline">
+        <div id="nav-stages"><!-- built by studio.js from STAGES --></div>
+      </div>
 
-      <p class="nav-head">Results</p>
-      <div class="nav-group">
+      <button class="nav-head" type="button" aria-expanded="true" aria-controls="g-results"><span class="caret" aria-hidden="true"></span>Results</button>
+      <div class="nav-group" id="g-results">
         <button class="nav-item" id="nav-artifacts" data-view="artifacts">
           <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-box"/></svg>
           Generated Artifacts
@@ -87,8 +89,8 @@
         </button>
       </div>
 
-      <p class="nav-head">Tools</p>
-      <div class="nav-group">
+      <button class="nav-head" type="button" aria-expanded="true" aria-controls="g-tools"><span class="caret" aria-hidden="true"></span>Tools</button>
+      <div class="nav-group" id="g-tools">
         <button class="nav-item" id="nav-report" data-view="report">
           <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chart"/></svg>
           Benchmark Report
@@ -1064,6 +1066,47 @@
       </section>
 
     </div>
+
+    <!-- ==================================================== CONSOLE DOCK -->
+    <!--
+      Fed entirely by the real build. Log mirrors the same term() stream the stage panes
+      print; Messages is that stream classified by severity; Reports lists artifacts that
+      actually exist on disk. Nothing here is populated with sample content.
+    -->
+    <section class="console" id="console" aria-label="Console">
+      <div class="console-tabs" role="tablist">
+        <button class="console-tab active" type="button" role="tab" aria-selected="true"
+                aria-controls="cpane-messages" data-cpane="messages">
+          Messages <span class="ctab-count" id="cnt-messages">0</span>
+        </button>
+        <button class="console-tab" type="button" role="tab" aria-selected="false"
+                aria-controls="cpane-log" data-cpane="log">
+          Log <span class="ctab-count" id="cnt-log">0</span>
+        </button>
+        <button class="console-tab" type="button" role="tab" aria-selected="false"
+                aria-controls="cpane-reports" data-cpane="reports">
+          Reports <span class="ctab-count" id="cnt-reports">0</span>
+        </button>
+        <div class="console-actions">
+          <button class="console-btn" type="button" id="console-clear" title="Clear the console">Clear</button>
+          <button class="console-btn" type="button" id="console-collapse"
+                  aria-expanded="true" aria-controls="console-body" title="Collapse the console">&#9662;</button>
+        </div>
+      </div>
+      <div class="console-body" id="console-body">
+        <div class="console-pane active" id="cpane-messages" role="tabpanel">
+          <div class="console-empty" id="cmsg-empty">No messages. Run a stage and its output appears here.</div>
+          <div id="cmsg-list"></div>
+        </div>
+        <div class="console-pane" id="cpane-log" role="tabpanel">
+          <div class="term" id="console-log"></div>
+        </div>
+        <div class="console-pane" id="cpane-reports" role="tabpanel">
+          <div class="console-empty" id="creport-empty">No reports yet. Completing a stage lists what it wrote here.</div>
+          <div id="creport-list"></div>
+        </div>
+      </div>
+    </section>
   </main>
 </div>
 

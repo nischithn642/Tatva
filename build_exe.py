@@ -445,8 +445,6 @@ def make_zip() -> str:
     if not os.path.isdir(APP_DIR):
         sys.exit(f"{APP_DIR} does not exist. Build first (drop --zip-only).")
 
-    write_readme()
-    stage_root_docs()
     zip_path = os.path.join(DIST, f"TATVA-{zip_slug()}-windows.zip")
     if os.path.exists(zip_path):
         os.remove(zip_path)
@@ -494,6 +492,14 @@ def main() -> None:
     else:
         stage_toolchain()
         verify_bundle()
+
+    # Staged here rather than in make_zip(), so --no-zip leaves a complete folder.
+    # PyInstaller's COLLECT deletes dist/TATVA outright on every run, taking README.txt
+    # and the stage guide with it; when the staging only ran on the zip path, a
+    # folder-only build silently handed back the folder without them.
+    if os.path.isdir(APP_DIR):
+        write_readme()
+        stage_root_docs()
 
     toolchain_bytes = tree_size(TOOLCHAIN_DIR) if os.path.isdir(TOOLCHAIN_DIR) else 0
     total_bytes = tree_size(APP_DIR)

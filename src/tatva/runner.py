@@ -23,7 +23,7 @@ from tatva.compiler import ModelIR, TargetVariant
 # Single shared exception type. There used to be a second, unrelated CompilationError
 # defined here, which meant diagnostics.classify_failure() never recognised the errors
 # the runner actually raised and always fell through to the generic branch.
-from tatva.diagnostics import CompilationError
+from tatva.diagnostics import CompilationError, MemoryLimitExceededError
 
 __all__ = [
     "BaselineResult",
@@ -121,14 +121,133 @@ _start:
     tail main
 """
 
-# Linker script defining a bare-metal memory space
+# QEMU's `virt` board puts RAM at 0x80000000 and the firmware (OpenSBI) in the first
+# 2 MiB of it, which is why the image is linked at 0x80200000. Anything sizing a RAM
+# region against a QEMU `-m` value has to account for that gap.
+RAM_ORIGIN = 0x80200000
+FIRMWARE_RESERVED_BYTES = 0x200000
+
+# The floor for the linked region. 128 MiB is what the region was fixed at before it
+# was computed, and it is also QEMU virt's default `-m`, so every model that used to
+# build and run keeps exactly the memory map it had.
+MIN_RAM_BYTES = 128 * 1024 * 1024
+
+# Headroom over the demand TATVA can account for: .text, the linker's own alignment,
+# and anything GCC emits that is not one of the pools counted in _ram_region_bytes.
+# .text measured 188 KB on a 6-layer BERT, so this is generous by design -- it costs
+# emulated address space, which is free, and getting it wrong costs a failed link.
+RAM_SLACK_BYTES = 16 * 1024 * 1024
+RAM_GRANULE_BYTES = 16 * 1024 * 1024
+
+# The two fixed pools in the generated sources. Named here so the memory budget and the
+# code that emits them cannot drift apart.
+WORKSPACE_POOL_BYTES = 1024 * 1024
+STACK_BYTES = 0x10000
+
+
+# Wall-clock allowance per MiB of linked image, per inference, for the QEMU timeout.
+#
+# Derived from a measurement, not picked: all_minilm_l6_v2.onnx (90.3 MB of weights,
+# 128 MiB region) ran 1 warm-up plus 1 timed inference in 100.9 s on this machine, which
+# is 0.39 s per MiB per inference. 0.6 leaves roughly 1.5x margin for a slower or busier
+# host. It is a timeout, not a budget -- a correct run never waits for it.
+QEMU_SECONDS_PER_MIB_PER_RUN = 0.6
+
+# The floor, and what the timeout was fixed at before it was computed. Small models keep
+# the behaviour they had.
+QEMU_MIN_TIMEOUT_SECONDS = 30
+
+
+def _qemu_memory_mib(ram_bytes: int) -> int:
+    """
+    RAM to give the QEMU `virt` board, in MiB, for an image linked into `ram_bytes`.
+
+    The board defaults to 128 MiB. A model linked into a larger region needs `-m` raised
+    to match or it loads into memory the machine does not have, so a build that got past
+    the linker would still die at boot. Returns at least 128, which is the default -- so
+    passing it changes nothing for models that already fit.
+    """
+    total = max(MIN_RAM_BYTES, ram_bytes) + FIRMWARE_RESERVED_BYTES
+    return -(-total // (1024 * 1024))
+
+
+def _qemu_timeout_seconds(ram_bytes: int, run_count: int) -> int:
+    """
+    Wall-clock ceiling for one QEMU run, scaled by image size and inference count.
+
+    The ceiling was fixed at 30 s, which is fine for the small fixtures and nowhere near
+    enough for a real transformer: the 6-layer BERT above needed 100.9 s for two
+    inferences, so the fixed timeout killed the run and reported it as a QEMU failure
+    rather than as the timeout it was.
+    """
+    mib = max(MIN_RAM_BYTES, ram_bytes) / (1024 * 1024)
+    scaled = mib * max(1, run_count) * QEMU_SECONDS_PER_MIB_PER_RUN
+    return max(QEMU_MIN_TIMEOUT_SECONDS, int(scaled))
+
+
+def _mib(n: int) -> str:
+    return f"{n / (1024 * 1024):.1f} MiB"
+
+
+def _memory_budget_note(
+    weights_bytes: int, activation_bytes: int, io_bytes: int, ram_bytes: int, target: str
+) -> str:
+    """
+    Spell out where a build's memory went, for a failure the user has to act on.
+
+    Every figure is the size of a pool this build actually emitted, not an estimate.
+    """
+    return (
+        f"Memory budget for {target}: "
+        f"weights {_mib(weights_bytes)}, "
+        f"activations {_mib(activation_bytes)}, "
+        f"workspace {_mib(WORKSPACE_POOL_BYTES)}, "
+        f"harness IO {_mib(io_bytes)}, "
+        f"stack {_mib(STACK_BYTES)} "
+        f"-- linked into a {_mib(ram_bytes)} region."
+    )
+
+
+def render_link_ld(ram_bytes: int = MIN_RAM_BYTES) -> str:
+    """
+    Fill the linker-script template for a region of `ram_bytes`.
+
+    LINK_LD is a template with markers, not a usable script, so every caller has to go
+    through here -- writing the raw constant would put "@TATVA_RAM_LENGTH@" into the file
+    and fail the link with a parse error.
+    """
+    return LINK_LD.replace("@TATVA_RAM_LENGTH@", str(ram_bytes)).replace(
+        "@TATVA_STACK_BYTES@", str(STACK_BYTES)
+    )
+
+
+def _ram_region_bytes(accounted_bytes: int) -> int:
+    """
+    Size the linker's RAM region from what the build actually needs.
+
+    `accounted_bytes` is every pool compile_model can measure before invoking GCC:
+    the weight blob, the activation pool, the workspace pool, the harness IO buffers
+    and the stack. The result adds RAM_SLACK_BYTES for the sections it cannot measure
+    and rounds up to RAM_GRANULE_BYTES, with MIN_RAM_BYTES as a floor.
+
+    The region used to be fixed at 128 MiB. A model whose weights alone exceeded that
+    failed at the linker with ".bss will not fit in region ram" -- a message that names
+    .bss because .bss is simply what the linker was placing when it ran out, not because
+    the activations were the problem.
+    """
+    needed = max(MIN_RAM_BYTES, accounted_bytes + RAM_SLACK_BYTES)
+    return -(-needed // RAM_GRANULE_BYTES) * RAM_GRANULE_BYTES
+
+
+# Linker script defining a bare-metal memory space. LENGTH is filled in per build by
+# _ram_region_bytes; see the note there about why it is no longer a fixed 128M.
 LINK_LD = """
 OUTPUT_ARCH( "riscv" )
 ENTRY( _start )
 
 MEMORY
 {
-  ram (wxa) : ORIGIN = 0x80200000, LENGTH = 128M
+  ram (wxa) : ORIGIN = 0x80200000, LENGTH = @TATVA_RAM_LENGTH@
 }
 
 SECTIONS
@@ -159,7 +278,7 @@ SECTIONS
 
   . = ALIGN(16);
   _stack_bottom = .;
-  . += 0x10000; /* 64KB stack */
+  . += @TATVA_STACK_BYTES@;
   _stack_top = .;
 }
 """
@@ -306,15 +425,35 @@ int main(void) {
         tvmgen_default_run(@TATVA_RUN_ARGS@);
     }
 @TATVA_PROFILE_RESET@
-    // Timed runs
+    // Timed runs.
+    //
+    // The loop bound below is a ceiling, not a quota. QEMU runs with -icount shift=0,
+    // which counts retired instructions rather than sampling a real clock, so a run
+    // that repeats identical work returns a bit-identical cycle count. Once two
+    // consecutive runs agree exactly there is no distribution left to sample and
+    // every further iteration costs wall-clock time to reprint a number we already
+    // have -- on a 90 MB transformer that was 12 redundant inferences, about ten
+    // minutes. The loop therefore stops the first time it *observes* stability; it
+    // does not assume it. If the counts ever disagree, every iteration is taken.
+    //
+    // A profiled build emits no break at all and always runs the ceiling. The
+    // per-kernel accumulators are reset once, above, and reported once, below, so
+    // they cover exactly the iterations the RUN_CYCLES lines cover -- an early exit
+    // would leave the kernel totals describing a different number of runs than the
+    // samples they are compared against.
+    uint64_t prev_cycles = 0;
     for (int i = 0; i < TIMED_COUNT; i++) {
         uint64_t start = read_cycles();
         tvmgen_default_run(@TATVA_RUN_ARGS@);
         uint64_t end = read_cycles();
+        uint64_t elapsed = end - start;
         sbi_print("RUN_CYCLES: ");
-        sbi_print_uint(end - start);
+        sbi_print_uint(elapsed);
         sbi_print("\\n");
+@TATVA_STABLE_BREAK@
+        prev_cycles = elapsed;
     }
+    (void)prev_cycles;
 @TATVA_PROFILE_REPORT@
     // Print first 5 output values for correctness verification
     sbi_print("FIRST_LOGITS: ");
@@ -341,6 +480,13 @@ int main(void) {
 # existed. That is the whole point of the marker placement: the measurement you
 # ship must not be the measurement you changed.
 # ---------------------------------------------------------------------------
+
+# Fills @TATVA_STABLE_BREAK@ in an unprofiled build. Two consecutive identical cycle
+# counts mean the simulation is deterministic over this workload, at which point the
+# remaining iterations cannot change mean, median or p95.
+STABLE_BREAK = """        if (i > 0 && elapsed == prev_cycles) {
+            break;
+        }"""
 
 PROFILE_MAIN_DECLS = """
 // Per-kernel accumulators live in model_run.c, next to the call sites they time.
@@ -470,10 +616,26 @@ class CompiledArtifact:
     """
     Wraps the paths and metadata of a compiled model ELF binary.
     """
-    def __init__(self, elf_path: str, build_dir: str, variant: TargetVariant):
+    def __init__(
+        self,
+        elf_path: str,
+        build_dir: str,
+        variant: TargetVariant,
+        ram_bytes: int = 0,
+        run_count: int = 1,
+    ):
         self.elf_path = elf_path
         self.build_dir = build_dir
         self.variant = variant
+        # Size of the linker's RAM region for this build. run_and_measure gives QEMU at
+        # least this much, because the board's default is 128 MiB and a model whose
+        # weights exceed that would load into memory the machine does not have. Defaults
+        # to 0 for artifacts built by something other than compile_model; the runner
+        # falls back to the board default in that case.
+        self.ram_bytes = ram_bytes
+        # Total inferences baked into main.c (warm-up plus timed). The QEMU timeout
+        # scales with it, because thirteen inferences take thirteen times as long as one.
+        self.run_count = run_count
 
 
 class MeasurementResult:
@@ -1009,7 +1171,8 @@ def verify_target(variant: TargetVariant) -> dict[str, Any]:
         with open(start_s_path, "w") as f:
             f.write(START_S)
         with open(link_ld_path, "w") as f:
-            f.write(LINK_LD)
+            # A hello-world needs nothing beyond the floor.
+            f.write(render_link_ld())
         with open(main_c_path, "w") as f:
             f.write(MAIN_C_HELLO.replace("TARGET_NAME", f'"{variant.name}"'))
 
@@ -1082,7 +1245,16 @@ def compile_model(
     model_ir: ModelIR,
     variant: TargetVariant,
     output_dir: str | None = None,
-    warmup_count: int = 3,
+    # One warm-up, not three. Warm-up exists to settle caches and fault in the
+    # workspace allocator, and neither happens here: the target is bare metal with a
+    # statically placed workspace and no MMU, and -icount counts instructions rather
+    # than modelling a cache. Measured on models/model.onnx, a build with zero warm-up
+    # reports 0.7309 ms on its very first timed run -- the same figure a three-warm-up
+    # build reports -- so the extra two runs bought nothing and cost a full inference
+    # each. The one that remains is cheap insurance, and if it ever turns out to
+    # matter the timed loop's stability check will see run 1 disagree with run 2 and
+    # take the full sample set.
+    warmup_count: int = 1,
     timed_count: int = 10,
     profile: bool = False,
 ) -> CompiledArtifact:
@@ -1204,52 +1376,79 @@ def compile_model(
             details="The model exposes no statically shaped graph inputs, so no benchmark harness can be generated.",
         )
 
+    # Constant tensors go into the build as a raw binary blob that the assembler pulls
+    # in with .incbin, not as a C initializer list.
+    #
+    # Spelling the weights out as decimal text cost about 4.1 bytes of source per byte
+    # of model -- all_minilm_l6_v2.onnx turned 90.3 MB of weights into a 371.8 MB
+    # weights.h -- and then made the C frontend parse all of it, which took cc1 past
+    # 3 GB of resident memory and minutes of wall clock before a single kernel was
+    # compiled. The assembler copies the blob through verbatim instead, so emission is
+    # a file write and the bytes are exact by construction rather than by round-tripping
+    # through decimal.
+    #
+    # The symbol names are unchanged, so model_run.c still writes `.data = constant_data_N`
+    # and neither it nor the TVM-generated operators.c can tell the difference.
+    weights_bin_path = os.path.join(build_dir, "weights.bin")
+
     weights_h_lines = [
         "#ifndef WEIGHTS_H",
         "#define WEIGHTS_H",
         "#include <stdint.h>",
         "",
+        "// Storage lives in weights.S, which .incbin's weights.bin. The declarations are",
+        "// left as incomplete array types on purpose: nothing takes sizeof() of them, and",
+        "// an incomplete type keeps the header honest about where the bytes come from.",
+        "",
     ]
-    for idx, const in enumerate(constants_list):
-        arr = const.data.numpy()
-        dtype = str(arr.dtype)
+    weights_s_lines = [
+        "/* Generated by TATVA -- storage for the model's constant tensors, taken",
+        "   verbatim from weights.bin. */",
+        "    .section .rodata",
+        "",
+    ]
 
-        # `dtype` is bound as a default so the closure captures this iteration's value
-        # rather than whatever the loop variable happens to be when it is called. It is
-        # only ever called inside this iteration today, but a late-binding closure over
-        # a loop variable is the kind of thing that quietly breaks the day someone makes
-        # this lazy.
-        def fmt(x, dtype=dtype):
-            if "int64" in dtype:
-                return f"{x}LL"
-            elif "int32" in dtype or "int8" in dtype or "uint8" in dtype or "int" in dtype:
-                return str(x)
-            else:
-                s = f"{x:.10g}"
-                if s.isdigit() or (s.startswith("-") and s[1:].isdigit()):
-                    return s + ".0f"
-                return s + "f"
+    # GNU as reads escape sequences inside the .incbin string, so a Windows path with
+    # backslashes would be mangled. Absolute, forward-slashed, so the directive does not
+    # depend on the assembler's working directory either.
+    blob_ref = weights_bin_path.replace("\\", "/")
 
-        if "int64" in dtype:
-            c_type = "int64_t"
-        elif "int32" in dtype:
-            c_type = "int32_t"
-        elif "int8" in dtype:
-            c_type = "int8_t"
-        elif "uint8" in dtype:
-            c_type = "uint8_t"
-        else:
-            c_type = "int32_t" if "int" in dtype else "float"
+    weights_bytes = 0
+    with open(weights_bin_path, "wb") as blob:
+        for idx, const in enumerate(constants_list):
+            arr = np.ascontiguousarray(const.data.numpy())
 
-        flat_data = arr.flatten()
-        data_str = ", ".join(fmt(x) for x in flat_data)
-        weights_h_lines.append(f"static {c_type} constant_data_{idx}[] = {{ {data_str} }};")
+            # 16 satisfies the alignment of every type map_dtype knows about, and the
+            # padding is written into the blob so the .incbin offsets below stay in step
+            # with the .balign directives.
+            pad = -weights_bytes % 16
+            if pad:
+                blob.write(b"\x00" * pad)
+                weights_bytes += pad
+
+            payload = arr.tobytes()
+            start = weights_bytes
+            blob.write(payload)
+            weights_bytes += len(payload)
+
+            weights_h_lines.append(f"extern {c_type_for_dtype(str(arr.dtype))} constant_data_{idx}[];")
+            weights_s_lines.extend(
+                [
+                    "    .balign 16",
+                    f"    .globl constant_data_{idx}",
+                    f"constant_data_{idx}:",
+                    f'    .incbin "{blob_ref}", {start}, {len(payload)}',
+                    "",
+                ]
+            )
 
     weights_h_lines.append("")
     weights_h_lines.append("#endif // WEIGHTS_H")
 
     with open(os.path.join(build_dir, "weights.h"), "w") as f:
         f.write("\n".join(weights_h_lines))
+    with open(os.path.join(build_dir, "weights.S"), "w") as f:
+        f.write("\n".join(weights_s_lines))
 
     model_run_lines = [
         "#include <stdint.h>",
@@ -1341,7 +1540,7 @@ def compile_model(
             "// offset to 0 on every free, which handed the entire pool back out while",
             "// earlier allocations from the same kernel were still live.",
             "#define TATVA_WS_HEADER 16u",
-            "static uint8_t workspace_pool[1024 * 1024] __attribute__((aligned(16)));",
+            f"static uint8_t workspace_pool[{WORKSPACE_POOL_BYTES}] __attribute__((aligned(16)));",
             "static size_t workspace_offset = 0;",
             "",
             "void* TVMBackendAllocWorkspace(int device_type, int device_id, uint64_t nbytes, int dtype_code_or_handle, int dtype_bits) {",
@@ -1529,8 +1728,17 @@ def compile_model(
 
     with open(os.path.join(build_dir, "start.S"), "w") as f:
         f.write(START_S)
+
+    # Every pool this build is about to ask the linker for, added up before GCC runs so
+    # the RAM region can be sized to fit it. Sizing after the fact is not an option --
+    # the linker is what fails.
+    io_bytes = sum(max(1, i["num_elements"]) * (i["dtype_bits"] // 8) for i in input_infos)
+    io_bytes += max(1, out_info["num_elements"]) * (out_info["dtype_bits"] // 8)
+    accounted_bytes = weights_bytes + curr_offset + WORKSPACE_POOL_BYTES + io_bytes + STACK_BYTES
+    ram_bytes = _ram_region_bytes(accounted_bytes)
+
     with open(os.path.join(build_dir, "link.ld"), "w") as f:
-        f.write(LINK_LD)
+        f.write(render_link_ld(ram_bytes))
 
     # Fill the harness template from the model's own inputs. Every buffer, its C
     # type and its dummy-data expression come from input_infos, so a model that is
@@ -1559,6 +1767,7 @@ def compile_model(
         .replace("@TATVA_IO_INIT@", "\n".join(io_init_lines))
         .replace("WARMUP_COUNT", str(warmup_count))
         .replace("TIMED_COUNT", str(timed_count))
+        .replace("@TATVA_STABLE_BREAK@", "" if profile else STABLE_BREAK)
         .replace("@TATVA_PROFILE_DECLS@", PROFILE_MAIN_DECLS if profile else "")
         .replace("@TATVA_PROFILE_RESET@", PROFILE_MAIN_RESET if profile else "")
         .replace("@TATVA_PROFILE_REPORT@", PROFILE_MAIN_REPORT if profile else "")
@@ -1583,6 +1792,7 @@ def compile_model(
         "-T",
         os.path.join(build_dir, "link.ld"),
         os.path.join(build_dir, "start.S"),
+        os.path.join(build_dir, "weights.S"),
         os.path.join(build_dir, "main.c"),
         os.path.join(build_dir, "model_run.c"),
         os.path.join(build_dir, "operators.c"),
@@ -1599,13 +1809,32 @@ def compile_model(
         # a timeout here surfaces as an unexplained CompilationError.
         res = subprocess.run(compile_cmd, capture_output=True, text=True, timeout=600)
         if res.returncode != 0:
+            gcc_stderr = res.stderr or res.stdout
+
+            # A region overflow is a memory-budget failure, not a toolchain-flags failure,
+            # and it deserves to be reported as one. Left as a generic CompilationError it
+            # came out advising the user to "check for memory space address collisions in
+            # link.ld", which describes neither the cause nor a fix. The linker names
+            # whichever section it happened to be placing when the region ran out --
+            # usually .bss -- so its message points at the activations even when the
+            # weights are what did not fit; the breakdown below says which.
+            overflow = re.search(r"region `(\w+)' overflowed by (\d+) bytes", gcc_stderr)
+            if overflow:
+                raise MemoryLimitExceededError(
+                    limit_bytes=ram_bytes,
+                    required_bytes=ram_bytes + int(overflow.group(2)),
+                    details=_memory_budget_note(
+                        weights_bytes, curr_offset, io_bytes, ram_bytes, variant.name
+                    ),
+                )
+
             raise CompilationError(
                 stage="cross-compilation",
                 command=" ".join(compile_cmd),
-                stderr=res.stderr or res.stdout,
+                stderr=gcc_stderr,
                 details=f"{gcc_name} exited with code {res.returncode} targeting {variant.name}.",
             )
-    except CompilationError:
+    except (CompilationError, MemoryLimitExceededError):
         raise
     except Exception as e:
         raise CompilationError(
@@ -1614,7 +1843,13 @@ def compile_model(
             details=f"Could not launch the cross-compiler: {e}",
         ) from e
 
-    return CompiledArtifact(elf_path=elf_path, build_dir=build_dir, variant=variant)
+    return CompiledArtifact(
+        elf_path=elf_path,
+        build_dir=build_dir,
+        variant=variant,
+        ram_bytes=ram_bytes,
+        run_count=warmup_count + timed_count,
+    )
 
 
 def run_and_measure(
@@ -1640,6 +1875,8 @@ def run_and_measure(
         qemu_path,
         "-M",
         "virt",
+        "-m",
+        f"{_qemu_memory_mib(artifact.ram_bytes)}M",
     ]
     if artifact.variant.gcc_march.endswith("v") or "gcv" in artifact.variant.gcc_march.lower():
         qemu_cmd.extend(["-cpu", "rv64,v=true,vlen=128"])
@@ -1654,7 +1891,12 @@ def run_and_measure(
     )
 
     try:
-        res = subprocess.run(qemu_cmd, capture_output=True, text=True, timeout=30)
+        res = subprocess.run(
+            qemu_cmd,
+            capture_output=True,
+            text=True,
+            timeout=_qemu_timeout_seconds(artifact.ram_bytes, artifact.run_count),
+        )
         if res.returncode != 0:
             raise RuntimeError(f"QEMU simulation execution failed:\nStdout: {res.stdout}\nStderr: {res.stderr}")
     except Exception as e:

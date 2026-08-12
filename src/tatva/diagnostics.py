@@ -233,12 +233,18 @@ def get_offline_explanation(context: DiagnosisContext) -> str:
                 f"Memory limit exceeded: The compiled model workspace footprint requires {req} bytes, "
                 f"which exceeds the configured target bare-metal RISC-V memory limit of {limit} bytes."
             )
+        detail = meta.get("details") or ""
         return (
             f"{headline}\n"
-            f"Mitigation:\n"
-            f"1. Reduce sequence dimension settings or network hidden sizes.\n"
-            f"2. Check if variable layout planning in TVM can be compressed.\n"
-            f"3. Increase the memory pool allocation boundaries if targeting real hardware."
+            + (f"{detail}\n" if detail else "")
+            + "Mitigation:\n"
+            "1. Shorten the sequence axis. TATVA binds a symbolic sequence dimension to 32; "
+            "the activation pool scales with it, though the weights do not.\n"
+            "2. Quantize the weights, which is the dominant term for a transformer of this size "
+            "(`--passes quantize`). Note that this build's INT8 pass is fake-quantization: it "
+            "shrinks nothing on its own and is measured slower than FP32.\n"
+            "3. Fit the model to the target. A model whose weights alone exceed the board's RAM "
+            "cannot be linked flat, and TATVA has no weight-streaming backend."
         )
     elif t == "accuracy_drop":
         mse = meta.get("mse")
@@ -283,7 +289,8 @@ def get_offline_explanation(context: DiagnosisContext) -> str:
             f"Mitigation:\n"
             f"1. Verify target RISC-V cross-compiler options and flags.\n"
             f"2. Ensure TVM libraries are compiled and headers are in the search path.\n"
-            f"3. Check for memory space address collisions in link.ld."
+            f"3. Read the linker output above. TATVA sizes link.ld's RAM region to the build, "
+            f"so a region overflow is reported separately as a memory-limit failure."
         )
     else:
         msg = meta.get("message", "An unexpected compilation error occurred.")

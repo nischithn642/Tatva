@@ -72,6 +72,7 @@ function clearRunViews() {
   markDone('s5', false);
   const next = $('btn-s5-next');
   if (next) next.disabled = true;
+  conReports();
 }
 
 /* ============================================================ tiny helpers */
@@ -309,14 +310,144 @@ function applyTheme(mode) {
   if (S.result) requestAnimationFrame(drawChart);   // canvas colours are theme-bound
 }
 
+/* ============================================================ console dock
+ *
+ * The dock is a view onto output the app already produces, not a second source of it.
+ * Every line in Log is a line term() printed; every row in Messages is one of those
+ * lines that carried a severity class; every row in Reports is a file the backend found
+ * on disk. Nothing here is generated for the sake of filling a panel, so a session that
+ * has run nothing shows three empty tabs, which is the truth.
+ */
+
+/* term() tags lines with a colour class. Those classes are the only severity signal in
+ * the codebase, so the mapping is read off them rather than by pattern-matching text --
+ * guessing at severity from wording would invent classifications the app never made. */
+const SEV_OF = { 'c-err': 'ERROR', 'c-warn': 'WARNING', 'c-ok': 'INFO', 'c-gold': 'INFO' };
+const CON = { msgs: 0, err: 0, warn: 0, log: 0 };
+
+function conCount(id, n, cls) {
+  const e = $(id);
+  if (!e) return;
+  e.textContent = String(n);
+  e.className = 'ctab-count' + (cls || '');
+}
+
+function conSync() {
+  conCount('cnt-log', CON.log);
+  conCount('cnt-messages', CON.msgs,
+    CON.err ? ' has-err' : CON.warn ? ' has-warn' : '');
+  show('cmsg-empty', CON.msgs === 0);
+}
+
+/* Mirror one term() line into the dock. */
+function conLine(line, cls) {
+  const log = $('console-log');
+  if (log) {
+    log.appendChild(el('div', cls || '', esc(line)));
+    log.scrollTop = log.scrollHeight;
+    CON.log++;
+  }
+
+  const sev = SEV_OF[cls];
+  const body = String(line == null ? '' : line).trim();
+  // A blank spacer line carries a class sometimes; it is not a message.
+  if (!sev || !body) { conSync(); return; }
+
+  const list = $('cmsg-list');
+  if (list) {
+    const row = el('div', 'cmsg ' + sev.toLowerCase());
+    row.innerHTML = `<span class="sev">${sev}</span><span class="txt">${esc(body)}</span>`;
+    list.appendChild(row);
+    CON.msgs++;
+    if (sev === 'ERROR') CON.err++;
+    else if (sev === 'WARNING') CON.warn++;
+  }
+  conSync();
+}
+
+function conClear() {
+  const log = $('console-log'); if (log) log.innerHTML = '';
+  const list = $('cmsg-list'); if (list) list.innerHTML = '';
+  CON.msgs = CON.err = CON.warn = CON.log = 0;
+  conSync();
+}
+
+/* Reports is the artifact inventory the backend reads off disk -- the same call the
+ * Artifacts page makes. If a run wrote nothing, this stays empty rather than listing
+ * filenames a build is "supposed" to produce. */
+async function conReports() {
+  const list = $('creport-list');
+  if (!list) return;
+  list.innerHTML = '';
+  let n = 0;
+
+  if (S.runId) {
+    let r;
+    try { r = await call('get_artifacts', S.runId); }
+    catch (_) { r = null; }
+    (r && r.success ? r.builds || [] : []).forEach(b => {
+      (b.artifacts || []).forEach(a => {
+        const row = el('div', 'cmsg info');
+        row.innerHTML =
+          `<span class="sev">${esc(b.config)}</span>` +
+          `<span class="txt mono">${esc(a.name)}</span>` +
+          `<span class="at">${esc(a.stage)} · ${fmtSize(a.size_bytes)}</span>`;
+        row.title = 'Open in Generated Artifacts';
+        row.style.cursor = 'pointer';
+        row.addEventListener('click', () => switchView('artifacts'));
+        list.appendChild(row);
+        n++;
+      });
+    });
+  }
+
+  conCount('cnt-reports', n);
+  show('creport-empty', n === 0);
+}
+
+function wireConsole() {
+  document.querySelectorAll('.console-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.console-tab').forEach(t => {
+        const on = t === tab;
+        t.classList.toggle('active', on);
+        t.setAttribute('aria-selected', String(on));
+      });
+      document.querySelectorAll('.console-pane').forEach(p => {
+        p.classList.toggle('active', p.id === 'cpane-' + tab.dataset.cpane);
+      });
+      // Opening the tab is the moment to re-read the disk, so a file deleted since the
+      // build does not linger in the list.
+      if (tab.dataset.cpane === 'reports') conReports();
+    });
+  });
+
+  const clear = $('console-clear');
+  if (clear) clear.addEventListener('click', conClear);
+
+  const col = $('console-collapse');
+  if (col) {
+    col.addEventListener('click', () => {
+      const dock = $('console');
+      const now = dock.classList.toggle('collapsed');
+      col.setAttribute('aria-expanded', String(!now));
+      col.innerHTML = now ? '&#9652;' : '&#9662;';
+      col.title = now ? 'Expand the console' : 'Collapse the console';
+    });
+  }
+}
+
 /* ============================================================ terminal */
 function term(line, cls) {
+  conLine(line, cls);
   const t = $('terminal');
   if (!t) return;
   const d = el('div', cls || '', esc(line));
   t.appendChild(d);
   t.scrollTop = t.scrollHeight;
 }
+/* Clearing a stage's own terminal does not clear the dock: the dock is the transcript of
+ * the whole session, and stage 05 clears its pane at the start of every run. */
 const termClear = () => { const t = $('terminal'); if (t) t.innerHTML = ''; };
 
 // The beta scope calls plain-English diagnostics the key differentiator: on failure the
@@ -1132,6 +1263,7 @@ async function runBuild() {
     // Validation and the audit trail were still recorded, and they are where a blocked
     // run explains itself. Hide the artifacts route, though: there are no artifacts.
     show('btn-s5-artifacts', false);
+    conReports();
     return;
   }
 
@@ -1173,6 +1305,7 @@ async function runBuild() {
   $('btn-s5-next').disabled = false;
   show('btn-s5-artifacts', (r.artifact_count || 0) > 0);
   renderReport();
+  conReports();
 }
 
 /* The run's verdict on the page that produced it, in the backend's own vocabulary.
@@ -2020,6 +2153,21 @@ function wire() {
     if (go) { switchView(go.dataset.goto); }
   });
 
+  // Flow Navigator groups collapse. The expanded state is the truth in the DOM -- the
+  // header's aria-expanded and the group's hidden attribute are set from the same
+  // toggle, so a screen reader and the caret never disagree.
+  document.querySelectorAll('.nav-head').forEach(head => {
+    head.addEventListener('click', () => {
+      const group = $(head.getAttribute('aria-controls'));
+      if (!group) return;
+      const open = head.getAttribute('aria-expanded') !== 'true';
+      head.setAttribute('aria-expanded', String(open));
+      group.hidden = !open;
+    });
+  });
+
+  wireConsole();
+
   $('btn-theme').addEventListener('click', () =>
     applyTheme(document.documentElement.className === 'dark' ? 'light' : 'dark'));
 
@@ -2117,8 +2265,10 @@ async function boot() {
   buildOverviewTable();
   wire();
 
-  let theme = 'dark';
-  try { theme = localStorage.getItem('tatva-theme') || 'dark'; } catch (_) { /* private mode */ }
+  // Light is the default, the way Vivado ships. Dark is still one click away and is
+  // remembered per machine once chosen.
+  let theme = 'light';
+  try { theme = localStorage.getItem('tatva-theme') || 'light'; } catch (_) { /* private mode */ }
   applyTheme(theme);
 
   markDone('s1', false);

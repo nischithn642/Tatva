@@ -58,6 +58,11 @@ rather than adjusted, and the corrections are stated plainly in `OPTIMIZATION.md
 
 Reproduce any row with `tatva baseline-test <model> --target RV64GC`.
 
+> These ELF sizes are the ones tag `v2.0.0-beta.1` actually produced and are left as
+> measured. A later change emits weights as a `.incbin` blob instead of a C array, which
+> adds 24–64 B of alignment padding to every binary; see `OPTIMIZATION.md` for the current
+> figures. No cycle count in either table moved.
+
 ## Please read: what these numbers are, and are not
 
 **They are emulator cycles, not silicon.** Measurement is QEMU system-mode under

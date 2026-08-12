@@ -41,7 +41,13 @@ def test_compile_and_measure_e2e(skip_if_no_toolchain) -> None:
     assert result is not None
     assert result.environment == "QEMU_SIM"
     assert result.simulated is True
-    assert len(result.raw_samples_ms) == 3
+    # timed_count is a ceiling, not a quota: the on-target loop stops as soon as two
+    # consecutive runs report the same cycle count, because under -icount shift=0 no
+    # later sample can differ. Assert the ceiling is respected and that any truncation
+    # was earned -- a short sample set is only legitimate if the samples agree.
+    assert 2 <= len(result.raw_samples_ms) <= 3
+    if len(result.raw_samples_ms) < 3:
+        assert len(set(result.raw_samples_ms)) == 1
     assert result.mean_ms > 0.0
     assert result.median_ms > 0.0
     assert result.p95_ms > 0.0
