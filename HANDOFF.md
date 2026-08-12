@@ -68,50 +68,33 @@ Surface it with `tatva profile <model>`. Covered by `tests/test_profiling.py`.
 
 ---
 
-## 3. BROKEN RIGHT NOW — read this first
+## 3. Build artifacts — current and verified
 
-### 3a. The distribution zip is corrupt
+Both shippable files were rebuilt on 2026-08-12 at 09:49–09:50 and independently
+verified. **Nothing is outstanding here.**
 
-`dist/TATVA-beta-2.0-windows.zip` is **107,860,900 bytes**; it should be ~244.5 MB.
-A `build_exe.py --zip-only` run was interrupted mid-write. Confirmed:
+| Artifact | Size | State |
+| :--- | :--- | :--- |
+| `dist/TATVA-Setup-beta-2.0.exe` | 266,865,305 B | installer, share this |
+| `dist/TATVA-beta-2.0-windows.zip` | 256,374,554 B | portable, unzip and run `TATVA.exe` |
 
-```bash
-cd /c/Users/nisch/OneDrive/Desktop/tatva && .venv/Scripts/python.exe -c "import zipfile; zipfile.ZipFile('dist/TATVA-beta-2.0-windows.zip')"
-```
+Verified independently of the build's own report: the zip opens, holds **5,324
+entries**, and `ZipFile.testzip()` returns `None` — every CRC matches. The stage guide
+is at `TATVA/TATVA-Stage-Guide.pdf`, the app root, and **not** under `_internal/`. The
+bundled `riscv-none-elf-gcc.exe` and `qemu-system-riscv64.exe` are both present, and
+the freeze verified all six target triples compile (`RV32IMC`, `RV32IMAC`, `RV64GC`,
+`RV64IMAFDC`, `RV64GCV`, `RV32EMC`) plus QEMU 9.2.4 responding.
 
-fails with `BadZipFile: File is not a zip file`. **Do not ship it.**
+Still true, and worth stating plainly: these are **build-verified, not run-verified.**
+Nobody has installed the setup exe and launched the GUI. The payload is complete and
+the toolchain inside it works; that the window opens and a compile runs end to end has
+not been demonstrated. The cheapest way to close that gap is to launch
+`C:\Users\nisch\OneDrive\Desktop\tatva\dist\TATVA\TATVA.exe` directly — no install
+needed, and it exercises the freeze, which is where the risk actually is.
 
-`dist/TATVA-Setup-beta-2.0.exe` (266,862,847 B, 09:35) is **valid and installable** —
-it was built from the good 244.5 MB zip before the truncation. Its only flaw is that
-the stage guide sits in `_internal/` rather than the app root. It is a usable
-fallback if a rebuild is not wanted.
+### How to rebuild
 
-`dist/TATVA/` (the frozen folder) is in the **correct final layout**: the guide is at
-the root, and not in `_internal/`.
-
-### 3b. Two files are modified and uncommitted
-
-`tatva.spec` and `build_exe.py`. Both parse (`ast.parse` checked). They fix a real
-bug, described below. Decide to keep or revert them before rebuilding.
-
-**The bug:** `build_installer.py` verifies four things are in the payload and
-reported `stage guide MISSING` where the previous release said `found`. The zip had
-gone 5,324 → 5,323 entries. `TATVA-Stage-Guide.pdf` had been copied into `dist/TATVA`
-**by hand** and was referenced by nothing, so a PyInstaller run rewrote that folder
-and dropped it.
-
-Commit `fb36f6b` fixed reproducibility by adding it to the spec's `datas`. That was
-**half right**: PyInstaller 6 puts `datas` under `_internal/`, so a document meant for
-a human to read landed among the DLLs. `build_installer.py` did not catch it because
-its check matches on `endswith`, so any path passes.
-
-The uncommitted edits correct that: removed from `tatva.spec` `datas`, and a new
-`stage_root_docs()` in `build_exe.py` copies it into the app root next to
-`README.txt`, called from `make_zip()` right after `write_readme()`.
-
-### 3c. To finish the installer
-
-The frozen folder is already correct, so a full re-freeze is not required:
+The frozen folder is current, so a re-freeze is usually unnecessary:
 
 ```bash
 cd /c/Users/nisch/OneDrive/Desktop/tatva && .venv/Scripts/python.exe build_exe.py --zip-only
@@ -123,13 +106,28 @@ then
 cd /c/Users/nisch/OneDrive/Desktop/tatva && .venv/Scripts/python.exe build_installer.py
 ```
 
-Expect `entries 5,324` and all four verify lines `found`. The zip step takes a few
-minutes — **do not interrupt it**, that is what produced the corrupt file. If in any
-doubt about `dist/TATVA`, run `build_exe.py` with no flags for a clean freeze (~9 min).
+Expect `entries 5,324` and all four verify lines `found`. **The zip step takes a few
+minutes and must not be interrupted** — killing it mid-write once left a 107.8 MB
+truncated file that failed to open at all, while still looking like a plausible
+artifact on disk. If `dist/TATVA` is ever in doubt, run `build_exe.py` with no flags
+for a clean freeze (~9 min).
 
-Then commit `tatva.spec` and `build_exe.py` and push.
+`dist/` is not committed; it is build output.
 
-**Nothing under `dist/` is committed** — it is build output. Only the two source files.
+### The stage-guide bug, for context
+
+`build_installer.py` verifies four things are in the payload and once reported
+`stage guide MISSING` where the previous release said `found` — the zip had gone
+5,324 → 5,323 entries. `TATVA-Stage-Guide.pdf` had been copied into `dist/TATVA` **by
+hand** and was referenced by nothing, so a PyInstaller run rewrote that folder and
+dropped it.
+
+`fb36f6b` restored it via the spec's `datas`, which was **half right**: PyInstaller 6
+puts `datas` under `_internal/`, so a document meant for a person to read landed among
+the DLLs. The verifier missed that because it matches on `endswith`, so the file
+passes from anywhere in the payload. `dc6b088` finished the job — out of the spec, and
+into `stage_root_docs()` in `build_exe.py`, which copies it to the app root beside
+`README.txt`.
 
 ---
 
