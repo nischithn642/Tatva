@@ -34,12 +34,12 @@ so it rendered as a permanently broken image at the top of the README. -->
 > folder to a measured result, and lists the failures worth recognising. This section is
 > the short version.
 
-**The app is `TATVA.exe`.** Unzip `TATVA-beta-2.0-windows.zip` anywhere and double-click
+**The app is `TATVA.exe`.** Unzip `TATVA-2.1-windows.zip` anywhere and double-click
 it — no Python, no install, no account.
 
 **All five stages work on the unzipped folder, offline, with nothing else installed.**
 Stage 05 (generate) is the only one that shells out — to a RISC-V cross-compiler and
-QEMU — and as of Beta 2.0 both ship inside the zip, in `toolchain/` beside `TATVA.exe`.
+QEMU — and since Beta 2.0 both ship inside the zip, in `toolchain/` beside `TATVA.exe`.
 They are the pinned xPack builds, pruned to the six targets TATVA can emit code for. No
 admin rights, nothing added to `PATH`, nothing written outside the folder.
 

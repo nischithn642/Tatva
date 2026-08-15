@@ -68,6 +68,46 @@ def test_calibration_reports_the_fallback_honestly(tmp_path) -> None:
 
 
 @pytest.mark.unit
+def test_calibration_survives_the_protobuf_ceiling(mlp_model_path, monkeypatch) -> None:
+    """
+    The one path that did not benefit from the large-model work, and the release notes
+    say so: calibration calls `ort.InferenceSession(model.SerializeToString())`, which
+    re-serializes the whole graph in memory and cannot exceed protobuf's 2 GB message
+    limit. A model at that size therefore cannot be calibrated.
+
+    What must not happen is the guessed scale coming back looking measured. The
+    documented behaviour is a fallback that names its own cause, and it is asserted here
+    by provoking the exact failure rather than by trusting the prose -- a 2 GB fixture is
+    not something a test suite can carry.
+    """
+    import onnx
+
+    real_load = onnx.load
+
+    def load_then_break_serialization(*args, **kwargs):
+        model = real_load(*args, **kwargs)
+        # What protobuf raises once the encoded message passes 2 GB.
+        monkeypatch.setattr(
+            type(model),
+            "SerializeToString",
+            lambda self, **kw: (_ for _ in ()).throw(
+                ValueError("Message onnx.ModelProto exceeds maximum protobuf size of 2GB")
+            ),
+            raising=True,
+        )
+        return model
+
+    monkeypatch.setattr(onnx, "load", load_then_break_serialization)
+
+    scale, source = calibrate_activation_scale(str(mlp_model_path))
+
+    assert scale == FALLBACK_ACTIVATION_SCALE
+    assert source.startswith("fallback"), f"a guessed scale was reported as {source!r}"
+    assert "2GB" in source, "the fallback must carry the reason, not just the fact"
+    assert "calibrated on host" not in source
+
+
+@pytest.mark.unit
 def test_calibration_percentile_clips_outliers() -> None:
     """
     A lower percentile must yield a smaller scale on data with outliers -- that is the

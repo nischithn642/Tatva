@@ -29,7 +29,7 @@ def test_build_info_matches_the_package_version(bridge) -> None:
     website/index.html used to hardcode "v1.2.0-gemini" in five places while
     pyproject.toml said 0.2.0. This is the wire that keeps them honest.
 
-    The badge shows the display name ("Beta 2.0"); the label additionally carries the
+    The badge shows the display name ("2.1"); the label additionally carries the
     PEP 440 build string, so a screenshot of the window is enough to identify exactly
     which build someone is running.
     """

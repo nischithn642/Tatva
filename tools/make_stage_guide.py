@@ -12,6 +12,7 @@ dist/TATVA/ as well so it ships with the app.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
@@ -21,6 +22,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "docs" / "stage-guide.html"
 OUTPUT = ROOT / "TATVA-Stage-Guide.pdf"
+
+# The cover line carrying the release name. It is the only version string in the
+# document, and it is stamped from the package before rendering -- the 2.1 zip
+# otherwise shipped a guide whose cover read "Beta 2.0 · build 2.0.0b1", because a
+# static HTML file has nothing to keep it honest.
+META_LINE = re.compile(r'(<div class="meta">)TATVA · [^<]*(</div>)')
 
 BROWSERS = (
     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
@@ -41,10 +48,26 @@ def find_browser() -> Path:
     raise SystemExit("No Edge or Chrome found; cannot render the PDF.")
 
 
+def stamp_version() -> str:
+    """Write the current release onto the cover, in the source and so in the PDF."""
+    sys.path.insert(0, str(ROOT / "src"))
+    from tatva import DISPLAY_VERSION, __version__
+
+    caption = f"TATVA · {DISPLAY_VERSION} · build {__version__}"
+    source = SOURCE.read_text(encoding="utf-8")
+    stamped, count = META_LINE.subn(rf"\g<1>{caption}\g<2>", source)
+    if count != 1:
+        raise SystemExit(f'{SOURCE.name}: expected one <div class="meta"> cover line, found {count}.')
+    if stamped != source:
+        SOURCE.write_text(stamped, encoding="utf-8")
+    return caption
+
+
 def main() -> int:
     if not SOURCE.exists():
         raise SystemExit(f"Missing source document: {SOURCE}")
 
+    print(f"Cover    : {stamp_version()}")
     browser = find_browser()
     print(f"Renderer : {browser}")
     print(f"Source   : {SOURCE}")

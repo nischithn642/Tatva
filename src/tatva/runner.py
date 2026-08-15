@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -23,15 +24,22 @@ from tatva.compiler import ModelIR, TargetVariant
 # Single shared exception type. There used to be a second, unrelated CompilationError
 # defined here, which meant diagnostics.classify_failure() never recognised the errors
 # the runner actually raised and always fell through to the generic branch.
-from tatva.diagnostics import CompilationError, MemoryLimitExceededError
+from tatva.diagnostics import (
+    CompilationError,
+    EmulatorImageLimitError,
+    MemoryLimitExceededError,
+    SimulationTimeoutError,
+)
 
 __all__ = [
     "BaselineResult",
     "CompilationError",
     "CompiledArtifact",
+    "EmulatorImageLimitError",
     "ExecutionEnvironment",
     "KernelProfile",
     "MeasurementResult",
+    "SimulationTimeoutError",
     "bundled_tools_dir",
     "compile_model",
     "default_input_array",
@@ -153,9 +161,45 @@ STACK_BYTES = 0x10000
 # host. It is a timeout, not a budget -- a correct run never waits for it.
 QEMU_SECONDS_PER_MIB_PER_RUN = 0.6
 
+# The same allowance for a target without hardware floating point.
+#
+# Scaled from the constant above by a measured ratio, so the two carry the same margin.
+# The same model (all_minilm_l6_v2.onnx, 128 MiB region, run_count 7) was run on both
+# kinds of target on an otherwise idle machine:
+#
+#   RV64GC   220.5 s wall clock,  2,835,467,134 cycles per inference
+#   RV32IMC  799.4 s wall clock, 58,085,441,820 cycles per inference
+#
+# 20.5x the guest cycles, because without an F/D extension every FP32 multiply becomes a
+# soft-float library call; 3.625x the wall clock, the emulator absorbing some of it.
+# 0.6 x 3.625 = 2.175, rounded up. Cross-checked against a contended run of the same
+# build, which came out 1% slower -- host load is not what this is measuring.
+#
+# Without this, RV32IMC was judged against the hardware-float ceiling of 537 s and killed
+# at 553.7 s having done nothing wrong.
+QEMU_SOFT_FLOAT_SECONDS_PER_MIB_PER_RUN = 2.2
+
 # The floor, and what the timeout was fixed at before it was computed. Small models keep
 # the behaviour they had.
 QEMU_MIN_TIMEOUT_SECONDS = 30
+
+
+# Where QEMU's `virt` board puts the flattened device tree, and therefore the hard
+# ceiling on how far the image may extend.
+#
+# QEMU places the FDT below 3 GiB when RAM base plus size passes 3 GiB. The virt board's
+# RAM base is 0x80000000, so every `-m` above 1024M lands the FDT at 0xBFE00000 and
+# leaves it there. Measured against the bundled qemu-system-riscv64 at -m 1100M, 1600M,
+# 2500M, 4096M and 8192M -- 0xBFE00000 in all five cases. Raising `-m` does not move it.
+#
+# An image that reaches this address is refused at load with "Some ROM regions are
+# overlapping", which names the FDT and never mentions model size. Verified from both
+# sides: a 1008.1 MiB image runs, a 1036 MiB image is refused.
+QEMU_FDT_BASE = 0xBFE00000
+
+# 0xBFE00000 - 0x80200000 = 1020 MiB. This is the real upper bound on model size under
+# the bundled emulator, and it is lower than the linker's and lower than protobuf's.
+MAX_LOADABLE_IMAGE_BYTES = QEMU_FDT_BASE - RAM_ORIGIN
 
 
 def _qemu_memory_mib(ram_bytes: int) -> int:
@@ -171,18 +215,107 @@ def _qemu_memory_mib(ram_bytes: int) -> int:
     return -(-total // (1024 * 1024))
 
 
-def _qemu_timeout_seconds(ram_bytes: int, run_count: int) -> int:
+def _has_hardware_float(variant: TargetVariant) -> bool:
     """
-    Wall-clock ceiling for one QEMU run, scaled by image size and inference count.
+    Whether the target's ISA string includes hardware floating point.
+
+    `g` is shorthand for `imafd`, so it counts, as do explicit `f` and `d`. Everything
+    else -- rv32imc, rv32imac, rv32emc -- executes FP32 through soft-float library calls,
+    which is a difference in kind, not in degree, for a model full of float multiplies.
+    """
+    base = variant.gcc_march.lower().split("_", 1)[0]
+    exts = base[4:] if base.startswith(("rv32", "rv64")) else base
+    return any(letter in exts for letter in ("g", "f", "d"))
+
+
+def _qemu_timeout_seconds(ram_bytes: int, run_count: int, variant: TargetVariant | None = None) -> int:
+    """
+    Wall-clock ceiling for one QEMU run, scaled by image size, inference count and target.
 
     The ceiling was fixed at 30 s, which is fine for the small fixtures and nowhere near
     enough for a real transformer: the 6-layer BERT above needed 100.9 s for two
     inferences, so the fixed timeout killed the run and reported it as a QEMU failure
     rather than as the timeout it was.
+
+    `variant` is optional so existing callers keep the hardware-float rate they were
+    written against. Passing it is what makes a soft-float target survive: the same
+    model on the same region needs several times the wall clock without an FPU.
+
+    Note this is deliberately generous. `run_count` is warm-up plus timed, but the timed
+    loop breaks as soon as two runs agree (STABLE_BREAK), which under `-icount shift=0`
+    is always after two -- so the real work is usually fewer inferences than the ceiling
+    is sized for. A timeout should never be the thing that ends a correct run.
     """
     mib = max(MIN_RAM_BYTES, ram_bytes) / (1024 * 1024)
-    scaled = mib * max(1, run_count) * QEMU_SECONDS_PER_MIB_PER_RUN
+    rate = QEMU_SECONDS_PER_MIB_PER_RUN
+    if variant is not None and not _has_hardware_float(variant):
+        rate = QEMU_SOFT_FLOAT_SECONDS_PER_MIB_PER_RUN
+    scaled = mib * max(1, run_count) * rate
     return max(QEMU_MIN_TIMEOUT_SECONDS, int(scaled))
+
+
+def _elf_load_span(elf_path: str) -> tuple[int, int] | None:
+    """
+    Lowest and highest physical address the ELF's PT_LOAD segments occupy.
+
+    Read from the program headers rather than inferred from the file size, because the
+    two differ: .bss occupies address space without occupying file bytes, and it is the
+    address span QEMU checks for overlap. On a 1.012 GiB image the two differ by 3.2 MiB,
+    which is the wrong side of the margin to guess at.
+
+    Returns None if the file cannot be parsed as an ELF. The caller falls back to reading
+    QEMU's own complaint, so a parse failure costs a worse message, never a wrong answer.
+    """
+    try:
+        with open(elf_path, "rb") as fh:
+            ident = fh.read(16)
+            if len(ident) < 16 or ident[:4] != b"\x7fELF":
+                return None
+            is_64 = ident[4] == 2
+            endian = "<" if ident[5] == 1 else ">"
+
+            # e_phoff, e_phentsize and e_phnum sit at different offsets in the two classes.
+            if is_64:
+                fh.seek(32)
+                (phoff,) = struct.unpack(f"{endian}Q", fh.read(8))
+                fh.seek(54)
+                phentsize, phnum = struct.unpack(f"{endian}HH", fh.read(4))
+            else:
+                fh.seek(28)
+                (phoff,) = struct.unpack(f"{endian}I", fh.read(4))
+                fh.seek(42)
+                phentsize, phnum = struct.unpack(f"{endian}HH", fh.read(4))
+
+            if not phnum or phentsize < (56 if is_64 else 32):
+                return None
+
+            low: int | None = None
+            high = 0
+            for i in range(phnum):
+                fh.seek(phoff + i * phentsize)
+                entry = fh.read(phentsize)
+                if len(entry) < phentsize:
+                    return None
+                if is_64:
+                    # p_type, p_flags, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz
+                    p_type, _flags, _off, _vaddr, p_paddr, _filesz, p_memsz = struct.unpack(
+                        f"{endian}IIQQQQQ", entry[:48]
+                    )
+                else:
+                    # p_type, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz
+                    p_type, _off, _vaddr, p_paddr, _filesz, p_memsz = struct.unpack(
+                        f"{endian}IIIIII", entry[:24]
+                    )
+                if p_type != 1:  # PT_LOAD
+                    continue
+                low = p_paddr if low is None else min(low, p_paddr)
+                high = max(high, p_paddr + p_memsz)
+
+            if low is None:
+                return None
+            return low, high
+    except (OSError, struct.error):
+        return None
 
 
 def _mib(n: int) -> str:
@@ -1890,17 +2023,62 @@ def run_and_measure(
         ]
     )
 
-    try:
-        res = subprocess.run(
-            qemu_cmd,
-            capture_output=True,
-            text=True,
-            timeout=_qemu_timeout_seconds(artifact.ram_bytes, artifact.run_count),
+    # Checked before QEMU is spawned, because QEMU's own refusal talks about overlapping
+    # ROM regions and names the device tree -- it never mentions the model, so on its own
+    # it reads as a toolchain bug rather than as "this model is too big to simulate".
+    span = _elf_load_span(artifact.elf_path)
+    if span is not None and span[1] > QEMU_FDT_BASE:
+        raise EmulatorImageLimitError(
+            limit_bytes=MAX_LOADABLE_IMAGE_BYTES,
+            required_bytes=span[1] - span[0],
+            fdt_address=QEMU_FDT_BASE,
+            details=(
+                f"The linked image spans {_mib(span[1] - span[0])}, from {span[0]:#x} to "
+                f"{span[1]:#x}, which runs past the device tree at {QEMU_FDT_BASE:#x}. The "
+                f"bundled QEMU `virt` board leaves {_mib(MAX_LOADABLE_IMAGE_BYTES)} between "
+                f"{RAM_ORIGIN:#x} and that address, and the address does not move with `-m`."
+            ),
         )
-        if res.returncode != 0:
-            raise RuntimeError(f"QEMU simulation execution failed:\nStdout: {res.stdout}\nStderr: {res.stderr}")
+
+    timeout_seconds = _qemu_timeout_seconds(artifact.ram_bytes, artifact.run_count, artifact.variant)
+    soft_float = not _has_hardware_float(artifact.variant)
+
+    try:
+        res = subprocess.run(qemu_cmd, capture_output=True, text=True, timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as e:
+        raise SimulationTimeoutError(
+            timeout_seconds=timeout_seconds,
+            target=artifact.variant.name,
+            run_count=artifact.run_count,
+            soft_float=soft_float,
+            details=(
+                f"Image linked into {_mib(artifact.ram_bytes)}; the ceiling is "
+                f"{QEMU_SOFT_FLOAT_SECONDS_PER_MIB_PER_RUN if soft_float else QEMU_SECONDS_PER_MIB_PER_RUN}"
+                f" s per MiB per inference for {artifact.variant.gcc_march}."
+            ),
+        ) from e
     except Exception as e:
         raise RuntimeError(f"Failed to execute QEMU process: {e}") from e
+
+    if res.returncode != 0:
+        stderr = res.stderr or ""
+        # Backstop for the case the pre-check could not see -- an unparsable ELF, or a
+        # future QEMU that moves the device tree somewhere the constant does not predict.
+        if "ROM regions are overlapping" in stderr:
+            segment = re.search(r"segment \d+ \(addresses 0x([0-9a-fA-F]+) - 0x([0-9a-fA-F]+)\)", stderr)
+            fdt = re.search(r"fdt \(addresses 0x([0-9a-fA-F]+)", stderr)
+            low, high = (int(segment.group(1), 16), int(segment.group(2), 16)) if segment else (RAM_ORIGIN, 0)
+            fdt_address = int(fdt.group(1), 16) if fdt else QEMU_FDT_BASE
+            raise EmulatorImageLimitError(
+                limit_bytes=max(0, fdt_address - RAM_ORIGIN),
+                required_bytes=max(0, high - low),
+                fdt_address=fdt_address,
+                details=(
+                    "QEMU refused to load the image because it overlaps the device tree at "
+                    f"{fdt_address:#x}. Reported by the emulator, not predicted:\n{stderr.strip()}"
+                ),
+            )
+        raise RuntimeError(f"QEMU simulation execution failed:\nStdout: {res.stdout}\nStderr: {res.stderr}")
 
     # Parse RUN_CYCLES
     cycle_samples = []

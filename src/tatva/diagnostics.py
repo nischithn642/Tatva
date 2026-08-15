@@ -25,6 +25,22 @@ class MemoryLimitExceededError(Exception):
         self.details = details
 
 
+class EmulatorImageLimitError(MemoryLimitExceededError):
+    """
+    Raised when the linked image is too large for the bundled QEMU `virt` board to load.
+
+    This is a limit of the emulator, not of RISC-V and not of the model: the ELF is
+    valid and would deploy to real hardware unchanged. QEMU pins the flattened device
+    tree at a fixed address, and an image that reaches it is refused at load with
+    "Some ROM regions are overlapping" -- a message that names the FDT and never
+    mentions size. Subclasses MemoryLimitExceededError so existing handlers still
+    catch it, while carrying enough context to say which limit was actually hit.
+    """
+    def __init__(self, limit_bytes: int, required_bytes: int, fdt_address: int, details: str = "") -> None:
+        super().__init__(limit_bytes=limit_bytes, required_bytes=required_bytes, details=details)
+        self.fdt_address = fdt_address
+
+
 class AccuracyDropError(Exception):
     """Raised when accuracy degradation after quantization or optimization exceeds the allowed threshold."""
     def __init__(self, mse: float, tolerance: float, details: str = "") -> None:
@@ -69,6 +85,36 @@ class CompilationError(Exception):
         self.details = details
 
 
+class SimulationTimeoutError(Exception):
+    """
+    Raised when the QEMU run outlives its wall-clock ceiling.
+
+    A timeout is not a compilation failure and must not be reported as one. Left as a
+    bare RuntimeError it reached the user as "Unexpected Compilation Failure" followed
+    by the whole QEMU command line, which says nothing about the fact that the model
+    was still computing when the clock ran out. The usual cause is a soft-float target:
+    an FP32 transformer on a core with no F/D extension runs every multiply through a
+    library call.
+    """
+    def __init__(
+        self,
+        timeout_seconds: int,
+        target: str,
+        run_count: int,
+        soft_float: bool = False,
+        details: str = "",
+    ) -> None:
+        super().__init__(
+            f"Simulation timed out: {target} did not finish {run_count} inference(s) "
+            f"within {timeout_seconds} seconds."
+        )
+        self.timeout_seconds = timeout_seconds
+        self.target = target
+        self.run_count = run_count
+        self.soft_float = soft_float
+        self.details = details
+
+
 class ImportInProgressError(Exception):
     """Raised when trying to import a model format whose importer is still in progress."""
     pass
@@ -85,7 +131,19 @@ def classify_failure(exception_or_result: Any) -> DiagnosisContext:
     """
     Classify a caught exception or build failure result into a structured DiagnosisContext.
     """
-    if isinstance(exception_or_result, MemoryLimitExceededError):
+    # Checked before MemoryLimitExceededError, which it subclasses -- the base class
+    # would otherwise swallow it and report the emulator's limit as a target one.
+    if isinstance(exception_or_result, EmulatorImageLimitError):
+        return DiagnosisContext(
+            error_type="emulator_image_limit",
+            metadata={
+                "limit_bytes": exception_or_result.limit_bytes,
+                "required_bytes": exception_or_result.required_bytes,
+                "fdt_address": exception_or_result.fdt_address,
+                "details": exception_or_result.details,
+            },
+        )
+    elif isinstance(exception_or_result, MemoryLimitExceededError):
         return DiagnosisContext(
             error_type="memory_limit_exceeded",
             metadata={
@@ -108,6 +166,17 @@ def classify_failure(exception_or_result: Any) -> DiagnosisContext:
             error_type="unsupported_operator",
             metadata={
                 "operator_name": exception_or_result.operator_name,
+                "details": exception_or_result.details,
+            },
+        )
+    elif isinstance(exception_or_result, SimulationTimeoutError):
+        return DiagnosisContext(
+            error_type="simulation_timeout",
+            metadata={
+                "timeout_seconds": exception_or_result.timeout_seconds,
+                "target": exception_or_result.target,
+                "run_count": exception_or_result.run_count,
+                "soft_float": exception_or_result.soft_float,
                 "details": exception_or_result.details,
             },
         )
@@ -159,6 +228,11 @@ def classify_failure(exception_or_result: Any) -> DiagnosisContext:
         )
 
 
+def _mib_str(n: int) -> str:
+    """Format a byte count as MiB for a user-facing diagnosis."""
+    return f"{n / (1024 * 1024):.1f} MiB"
+
+
 def _sanitize_string(val: str) -> str:
     """
     Sanitize string values in diagnostic metadata.
@@ -180,12 +254,16 @@ def whitelist_payload(error_type: str, metadata: dict[str, Any]) -> dict[str, An
     whitelisted = {}
     if error_type == "memory_limit_exceeded":
         allowed_keys = {"limit_bytes", "required_bytes", "details"}
+    elif error_type == "emulator_image_limit":
+        allowed_keys = {"limit_bytes", "required_bytes", "fdt_address", "details"}
     elif error_type == "accuracy_drop":
         allowed_keys = {"mse", "tolerance", "details"}
     elif error_type == "unsupported_operator":
         allowed_keys = {"operator_name", "details"}
     elif error_type == "compilation_error":
         allowed_keys = {"stage", "command", "details"}
+    elif error_type == "simulation_timeout":
+        allowed_keys = {"timeout_seconds", "target", "run_count", "soft_float", "details"}
     else:
         allowed_keys = {"details", "message"}
 
@@ -245,6 +323,74 @@ def get_offline_explanation(context: DiagnosisContext) -> str:
             "shrinks nothing on its own and is measured slower than FP32.\n"
             "3. Fit the model to the target. A model whose weights alone exceed the board's RAM "
             "cannot be linked flat, and TATVA has no weight-streaming backend."
+        )
+    elif t == "emulator_image_limit":
+        limit = meta.get("limit_bytes")
+        req = meta.get("required_bytes")
+        fdt = meta.get("fdt_address")
+        if limit is None or req is None:
+            headline = (
+                "Model too large to simulate: the linked image does not fit the address range "
+                "the bundled QEMU board leaves free. (The exact sizes were not reported by the "
+                "failing stage.)"
+            )
+        else:
+            headline = (
+                f"Model too large to simulate: the linked image spans {_mib_str(req)}, but the bundled "
+                f"QEMU `virt` board leaves only {_mib_str(limit)} free below its device tree"
+                + (f" at {fdt:#x}" if isinstance(fdt, int) else "")
+                + "."
+            )
+        detail = meta.get("details") or ""
+        return (
+            f"{headline}\n"
+            + (f"{detail}\n" if detail else "")
+            + "This is a limit of the emulator, not of RISC-V and not of your model. The ELF "
+            "that was just built is valid and would deploy to real hardware unchanged; only "
+            "the simulated run is refused.\n"
+            "Mitigation:\n"
+            "1. Use a smaller model. The weight blob is the dominant term, and it is linked "
+            "flat -- TATVA has no weight-streaming backend.\n"
+            "2. Deploy the built ELF to a physical RISC-V board with enough RAM. Nothing about "
+            "the image is wrong.\n"
+            "3. Do not raise QEMU's `-m`. The device tree address is fixed; it was measured at "
+            "the same address for every memory size from 1100M to 8192M, so more memory moves "
+            "nothing."
+        )
+    elif t == "simulation_timeout":
+        secs = meta.get("timeout_seconds")
+        target = meta.get("target") or "the selected target"
+        runs = meta.get("run_count")
+        soft = meta.get("soft_float")
+        if secs is None:
+            headline = f"Simulation timed out on {target} before the model finished."
+        else:
+            headline = (
+                f"Simulation timed out: {target} did not finish "
+                + (f"{runs} inference(s) " if runs else "")
+                + f"within {secs} seconds. The model was still computing; nothing crashed."
+            )
+        detail = meta.get("details") or ""
+        soft_note = (
+            f"{target} has no hardware floating-point unit (no F/D extension), so every FP32 "
+            "multiply in the model runs through a soft-float library call. On a transformer "
+            "that is the difference between finishing and not.\n"
+            if soft
+            else ""
+        )
+        return (
+            f"{headline}\n"
+            + (f"{detail}\n" if detail else "")
+            + soft_note
+            + "Mitigation:\n"
+            + (
+                "1. Select a target with hardware floating point -- RV64GC or RV64IMAFDC. "
+                "This is usually the whole fix for an FP32 model.\n"
+                if soft
+                else "1. Re-run on an idle machine; the ceiling is wall clock, so a busy host counts against it.\n"
+            )
+            + "2. Reduce the inference count (fewer warm-up or timed runs); the ceiling scales with it.\n"
+            "3. Use a smaller model. The ceiling also scales with the linked image size."
         )
     elif t == "accuracy_drop":
         mse = meta.get("mse")

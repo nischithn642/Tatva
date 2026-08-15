@@ -7,6 +7,202 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.1] - 2026-08-15 (`2.1.0`)
+
+Beta 2.0 compiled the models in `models/` and nothing much larger. This release is
+about the size of model TATVA will accept: 2.0 fell over somewhere below 100 MB, and
+2.1 compiles and runs a 1 GB ONNX end to end. That is near the ceiling rather than a
+round number: the linked image must fit below QEMU's device tree at `0xBFE00000`, leaving
+1020 MiB, and the 1 GB model clears it by 11.9 MiB. See *Known limitations*. The version
+is `2.1.0` where PEP 440 applies and **2.1** everywhere a person reads it — for 2.0 those
+two spellings differed (`2.0.0b1` vs "Beta 2.0"); they agree now.
+
+### Added
+- **Weights are emitted as a binary blob and pulled in with `.incbin`, not as a C
+  initializer list.** This is the change that makes large models compilable at all. A
+  decimal initializer costs about 4.1 source bytes per model byte, so a 116 MB model
+  became a ~480 MB `weights.h` and drove `cc1` past 3 GB of RSS before it was killed —
+  the failure was in the C front end, not in anything about RISC-V. `runner` now writes
+  `weights.bin` verbatim, a `weights.S` of `.incbin "weights.bin", <start>, <len>`
+  directives, and a `weights.h` of incomplete array declarations. The assembler copies
+  bytes; nothing parses them.
+- **The linker's RAM region is sized to the build instead of being a fixed 128 MB.**
+  `_ram_region_bytes()` adds up the weights, the planned activation offsets, the
+  workspace pool, model I/O and the stack, adds 16 MiB of slack, rounds up to a 16 MiB
+  granule, and floors at 128 MiB. `render_link_ld()` takes that number.
+- **QEMU is given memory and a timeout that scale with the model.** `-m` is the RAM
+  region plus the 2 MiB reserved for firmware; the timeout is 0.6 s per MiB per run
+  with a 30 s floor. A 1 GB model previously died on the old fixed timeout even when
+  the ELF was correct.
+- **A linker region overflow is reported as a memory limit, not a generic build
+  failure.** `region 'RAM' overflowed by N bytes` from `ld` is now raised as
+  `MemoryLimitExceededError` and carries the byte count into the diagnostics text.
+- **The QEMU timeout scales by target, not only by size.** A target without an F/D
+  extension runs FP32 through soft-float calls and needs several times the wall clock for
+  the same model; it was being judged against a ceiling measured on RV64GC and killed.
+  `_has_hardware_float()` reads the ISA string and `_qemu_timeout_seconds()` takes the
+  variant, with the soft-float rate derived from a measured 3.625x ratio. The parameter is
+  optional, so callers that do not pass it keep the rate they were written against.
+- **An image too large for the emulator is refused before QEMU starts, and says so.**
+  `_elf_load_span()` reads the ELF's PT_LOAD program headers — `p_memsz`, not the file
+  size, since `.bss` occupies addresses without occupying bytes — and a span reaching
+  `QEMU_FDT_BASE` raises the new `EmulatorImageLimitError` with the limit, the span and the
+  device tree address. If the pre-check cannot tell (unparsable ELF, a QEMU that places the
+  FDT elsewhere), the emulator's own "ROM regions are overlapping" output is parsed as a
+  backstop and classified the same way.
+- **A console dock in the studio window** — Messages, Log and Reports tabs with per-tab
+  counts, collapsible, clearable. The stage log previously had nowhere persistent to go.
+  The sidebar section headers became real collapsible buttons with `aria-expanded`.
+
+### Changed
+- **The memory-limit explanation says what will actually help.** It named three
+  mitigations, one of which ("increase the memory pool allocation boundaries") no longer
+  describes anything the user can do now that the pool is computed. It now states that
+  the sequence axis is bound to 32 and that the activation pool — not the weights —
+  scales with it, and it repeats that this build's INT8 pass is fake-quantization that
+  shrinks nothing and measured slower than FP32, rather than offering quantization as a
+  size fix without that caveat.
+- **`validate_model_file()` hashes in 4 MiB chunks.** It read the whole file into memory
+  purely to fingerprint it, which on a 1 GB ONNX is a 1 GB spike inside the process that
+  is also about to hold the parsed graph and TVM's copy of the weights.
+- **`build_exe.py` stages `README.txt` and the stage guide on the folder path, not only
+  the zip path.** PyInstaller's COLLECT deletes `dist/TATVA` outright on every run, so a
+  `--no-zip` build handed back a folder missing both.
+
+### Fixed
+- **The installer no longer hardcodes its own filename or its version.** `OUTPUT` was the
+  literal `TATVA-Setup-beta-2.0.exe`, so bumping the version produced an installer named
+  after the previous release. It now derives from `DISPLAY_VERSION` in
+  `src/tatva/__init__.py`, the same source `build_exe.py` uses for the zip.
+- **The installer picked the wrong payload.** `find_payload()` took the alphabetically
+  last `TATVA-*-windows.zip` in `dist/`. `dist/` keeps previous releases, and
+  `TATVA-2.1-windows.zip` sorts *before* `TATVA-beta-2.0-windows.zip` — so a 2.1 build
+  would have wrapped the old 2.0 payload in an installer named 2.1, which is the exact
+  failure that prompted this release. It now asks for this version's zip by name and
+  says which others it found if that one is missing.
+- **The stage guide's cover is stamped from the package instead of typed in.**
+  `docs/stage-guide.html` had `TATVA · Beta 2.0 · build 2.0.0b1` written into it, and the
+  PDF built from it ships in the zip — so the first 2.1 zip carried a guide whose cover
+  named the previous release. `tools/make_stage_guide.py` now rewrites that line from
+  `DISPLAY_VERSION`/`__version__` before rendering, and fails if the line it expects is
+  not there.
+- **A timed-out or oversized simulation is no longer reported as "Unexpected Compilation
+  Failure".** Both cases were wrapped by a blanket `except Exception` in
+  `run_and_measure()` and re-raised as `RuntimeError`, so a run that was merely slow, and a
+  model that was merely too big for the emulator, both reached the console as a QEMU
+  command line under a heading saying the compile had failed. Nothing had failed to
+  compile in either case. They are now `SimulationTimeoutError` and
+  `EmulatorImageLimitError`, each with its own offline explanation naming the cause and a
+  mitigation that is true — for the timeout, that an FP32 model wants a target with an FPU;
+  for the size, that raising QEMU's `-m` does nothing because the device tree does not
+  move.
+- **The wizard's version literals are checked against the package before it is built.**
+  `installer/tatva_setup.py` cannot import `tatva` — it is a 15 MB Tkinter stub frozen
+  without numpy, onnx and TVM — so `APP_VERSION` and `APP_BUILD` have to be copies.
+  `check_stub_version()` now compares them and refuses to build on a mismatch, which is
+  what keeps the copies from drifting the way they already had.
+
+### Verified
+
+Both ends of the requested range were compiled and run **on RV64GC**, not estimated.
+Timings are wall clock on this machine (15.2 GB RAM); the latency figure is QEMU system
+mode with `-icount shift=0` at a nominal 100 MHz, which makes every sample bit-identical
+by construction. Not silicon. A soft-float target is far slower for the same model — see
+*Known limitations*.
+
+| Model | Import | Compile | ELF | RAM region | QEMU |
+|---|---|---|---|---|---|
+| 116.1 MB | 6.0 s | 3.9 s | 116.0 MB | 150,994,944 B (144 MiB) | `-m 146M`, ran in 25.0 s |
+| 1008.5 MB | 11.4 s | 32.8 s | 1008.1 MB | 1,090,519,040 B (1040 MiB) | `-m 1042M`, ran in 232.7 s |
+
+Both booted OpenSBI v1.5.1 and finished with `=== Latency Test Finished ===`. The 116 MB
+model printed `RUN_CYCLES: 244065619` → **2440.65619 ms** against a scaled timeout of
+172 s; the 1 GB model printed `RUN_CYCLES: 2381738678` → **23817.38678 ms** against 1248 s.
+Mean = median = p95 in both cases, which is what `-icount shift=0` guarantees.
+
+Neither figure is a parity check. Both fixtures are stacks of `MatMul → Add → ReLU` with
+weights drawn from N(0, 0.02), so the signal decays layer over layer: at 29 layers the
+host reference itself comes out around 1e-11, and the target's `FIRST_LOGITS` print as
+`0.000000` because that is what the model computes, not because the compile is wrong.
+Numerical parity is covered by the fixtures in `models/`, which have output worth
+comparing.
+
+**The external-data form works, and produces the same bytes.** Models at or above 1 GB
+are normally stored as `model.onnx` plus a sidecar `model.onnx_data`, because protobuf
+cannot encode a single message larger than 2 GB. Compiling the split form and the
+single-file form of the same model produced byte-identical `weights.bin` (`cmp`, no
+differences), so this is real support for the shape these models actually ship in.
+
+GUI paths at 1 GB: `inspect_model` 7.3 s, `validate_model_file` 3.1 s, `analyze_model`
+10.3 s — all returned, none raised. `calibrate_activation_scale` on the 116 MB model took
+1.3 s and returned a calibrated scale, not the labelled fallback.
+
+487 tests pass and lint is clean. 42 of those are new, and they exist because none of the
+above had any regression coverage at all: a change restoring the fixed 128 MiB region or
+the decimal weight emission would have left the old suite entirely green. They cover the
+region/memory/timeout arithmetic against the byte counts measured here, the `.incbin`
+emission (offsets 16-aligned and inside the blob, no initializer list left in
+`weights.h`), a region overflow provoked from a real `ld` invocation so the parse is
+tested against what the linker prints, the external-data form compiling to identical
+weights, calibration's fallback when protobuf's 2 GB ceiling is hit, and agreement
+between the package version and every place that copies it. The last 17 cover the
+emulator ceiling and the target-scaled timeout: the 1020 MiB window against the images
+that were actually accepted and refused, hardware-float detection across all six targets,
+PT_LOAD parsing for ELF32 and ELF64 with no answer rather than a wrong one on a bad file,
+the pre-check refusing an oversized image before QEMU is started, QEMU's real overlap
+message as a backstop, and the diagnosis text for both new failures.
+
+The soft-float path was re-run end to end with nothing patched: `all_minilm_l6_v2.onnx` on
+RV32IMC, the case that was being killed at 537 s, now sizes its own ceiling at 1971 s and
+finishes in 806.8 s with `mean_ms = 580854.4182` — bit-identical to the figure measured
+with the ceiling lifted, which is what `-icount shift=0` should give.
+
+Every ONNX file on this machine was then put through the whole pipeline on RV64GC as a
+sweep — 14 models from 0.0 MB to 86.2 MB, including both deliberate failure fixtures.
+Twelve compiled and ran; the two that did not are `model_repairable.onnx` and
+`model_unsupported.onnx`, which exist to fail, and both were named correctly
+(`CompilationError` at the `tvm-lowering` step, `UnsupportedOperatorError` for
+`UnsupportedOpXYZ`). Nothing landed in the generic "Unexpected Compilation Failure"
+bucket: `ran=12  diagnosed=2  UNEXPLAINED=0`. `all_minilm_l6_v2.onnx` returned
+28354.6713 ms, the same value as the earlier standalone run.
+
+The packaged `TATVA.exe` was launched from `dist/TATVA/`: it opens its main window and
+exits cleanly with nothing on stderr. Because the fix changes shipped source, the
+artifacts were rebuilt and the frozen bytecode inside `TATVA.exe` was read back out of its
+embedded archive and checked directly — both new exception types, all five new runner
+symbols, and the measured soft-float constant `2.2` are present in the code the installed
+app will import. The installer's wizard has not been run end to end on a clean machine;
+its payload is verified by hash and opened through the same `PayloadSlice` window the
+installer itself uses.
+
+### Known limitations
+- **1020 MiB is the largest image QEMU will load**, and it is the first ceiling reached —
+  below the linker's ~2 GiB relocation reach and below protobuf's 2 GB. The `virt` board
+  pins its device tree at `0xBFE00000` once RAM base plus size passes 3 GiB; the image
+  loads at `0x80200000`; the gap is `0x3FC00000` = 1,069,547,520 bytes. Measured from both
+  sides — a 1008.1 MiB image ran, a 1036 MiB image was refused — and the device tree stayed
+  at that address for `-m` 1100M, 1600M, 2500M, 4096M and 8192M, so raising `-m` does not
+  help. `run_and_measure` now checks the ELF's PT_LOAD span before starting QEMU and raises
+  `EmulatorImageLimitError`, so this reads as a size limit rather than an unexpected
+  compilation failure.
+- **A soft-float target is 20.5x the guest cycles for an FP32 model**, and the published
+  benchmarks are all RV64GC. `RV32IMC`, `RV32IMAC` and `RV32EMC` have no F/D extension, so
+  every float multiply becomes a library call. Measured on `all_minilm_l6_v2.onnx`, same
+  128 MiB region, same run count: RV64GC 2,835,467,134 cycles per inference and 220.5 s of
+  wall clock; RV32IMC 58,085,441,820 cycles and 799.4 s. The timeout now scales by target
+  (`QEMU_SOFT_FLOAT_SECONDS_PER_MIB_PER_RUN`), so these runs finish instead of being killed
+  — but if you want a transformer to be fast, the fix is an FPU, not a longer ceiling.
+- `optimizer.py` calls `ort.InferenceSession(model.SerializeToString())`, which
+  re-serializes the whole graph in memory and cannot exceed protobuf's 2 GB message
+  ceiling. It is already wrapped so that a failure returns a fallback scale *labelled as
+  a fallback*, so it degrades honestly rather than silently — but calibration is the one
+  path that does not benefit from the streaming changes above.
+- A model whose weights alone exceed the target board's RAM still cannot be linked.
+  There is no weight-streaming backend, and the diagnostics now say so instead of
+  suggesting a pool size to raise.
+
+---
+
 ## [Beta 2.0] - 2026-08-08 (`2.0.0b1`)
 
 Everything below came out of driving a real five-stage run in the packaged

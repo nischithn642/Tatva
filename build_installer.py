@@ -1,4 +1,4 @@
-"""Build TATVA-Setup-beta-2.0.exe — a single-file Windows installer.
+"""Build TATVA-Setup-<version>.exe — a single-file Windows installer.
 
     python build_installer.py
 
@@ -18,6 +18,7 @@ Run build_exe.py first — this script installs whatever that produced.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -32,7 +33,51 @@ DIST = ROOT / "dist"
 BUILD = ROOT / "build" / "installer"
 STUB_DIR = BUILD / "stub"
 STUB_NAME = "TATVA-Setup-stub"
-OUTPUT = DIST / "TATVA-Setup-beta-2.0.exe"
+
+
+def zip_slug() -> str:
+    """The version fragment build_exe.py puts in the artifact filenames, e.g. "2.1".
+
+    Read from the same single source of truth (src/tatva/__init__.py) rather than
+    written out here. The setup filename used to be a literal, so a version bump
+    silently shipped a 2.1 payload inside TATVA-Setup-beta-2.0.exe.
+    """
+    sys.path.insert(0, str(ROOT / "src"))
+    try:
+        from tatva import DISPLAY_VERSION
+
+        return DISPLAY_VERSION.strip().lower().replace(" ", "-")
+    except Exception:
+        return "unversioned"
+
+
+OUTPUT = DIST / f"TATVA-Setup-{zip_slug()}.exe"
+
+
+def check_stub_version() -> None:
+    """Refuse to build a wizard that names a different version than it installs.
+
+    tatva_setup.py cannot import the package -- freezing it with numpy, onnx and TVM
+    attached would defeat the point of a 15 MB stub -- so it carries APP_VERSION and
+    APP_BUILD as literals. Unchecked, those are exactly the kind of copy that gets
+    left behind by a version bump and ships a wizard captioned with the old release.
+    """
+    sys.path.insert(0, str(ROOT / "src"))
+    from tatva import DISPLAY_VERSION, __version__
+
+    source = SCRIPT.read_text(encoding="utf-8")
+    expected = {"APP_VERSION": DISPLAY_VERSION, "APP_BUILD": __version__}
+    for name, want in expected.items():
+        found = re.search(rf'^{name}\s*=\s*"([^"]*)"', source, re.MULTILINE)
+        if found is None:
+            raise SystemExit(f"{SCRIPT.name} no longer defines {name}.")
+        if found.group(1) != want:
+            raise SystemExit(
+                f"{SCRIPT.name} has {name} = \"{found.group(1)}\" but the package says "
+                f'"{want}". Update the literal in {SCRIPT.name}.'
+            )
+    print(f"Version    {DISPLAY_VERSION}  ({__version__})")
+
 
 FOOTER_MAGIC = b"TATVAPKG1"
 FOOTER_FORMAT = "<QQ"
@@ -56,10 +101,18 @@ RULE = "=" * 62
 
 
 def find_payload() -> Path:
-    candidates = sorted(DIST.glob("TATVA-*-windows.zip"))
-    if not candidates:
-        raise SystemExit("No distribution zip in dist/. Run: python build_exe.py")
-    payload = candidates[-1]
+    # This version's zip, by name -- not the alphabetically last one. dist/ keeps
+    # previous releases, and "TATVA-2.1-windows.zip" sorts before
+    # "TATVA-beta-2.0-windows.zip", so picking the tail wrapped the *old* payload
+    # in an installer named after the new version.
+    expected = DIST / f"TATVA-{zip_slug()}-windows.zip"
+    if not expected.exists():
+        others = sorted(p.name for p in DIST.glob("TATVA-*-windows.zip"))
+        raise SystemExit(
+            f"No {expected.name} in dist/. Run: python build_exe.py"
+            + (f"  (found instead: {', '.join(others)})" if others else "")
+        )
+    payload = expected
     with zipfile.ZipFile(payload) as archive:  # refuse to ship a truncated archive
         names = archive.namelist()
         if not names:
@@ -181,6 +234,7 @@ def main() -> int:
     if not SCRIPT.exists():
         raise SystemExit(f"Missing {SCRIPT}")
 
+    check_stub_version()
     payload = find_payload()
     print(f"Payload    {payload.name}  ({payload.stat().st_size / 1024**2:.1f} MB)")
 

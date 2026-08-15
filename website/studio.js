@@ -2288,7 +2288,7 @@ async function boot() {
   text('mode-badge', 'Local · offline');
   try {
     const b = await call('get_build_info');
-    // b.version is already display-ready ("Beta 2.0"). Do not decorate it: prefixing
+    // b.version is already display-ready ("2.1"). Do not decorate it: prefixing
     // a "v" here is how the badge once ended up reading "vv0.3.0".
     text('build-badge', b.version || b.label || '—');
     const badgeNode = $('build-badge');

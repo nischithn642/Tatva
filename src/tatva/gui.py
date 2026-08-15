@@ -30,7 +30,7 @@ if _SRC_DIR not in sys.path:
 # is a string that goes stale the moment anyone bumps the real version.
 from tatva import DISPLAY_VERSION, __version__  # noqa: E402
 
-# The badge shows the friendly name ("Beta 2.0"); __version__ stays PEP 440 for
+# The badge shows the friendly name ("2.1"); __version__ stays PEP 440 for
 # packaging. Both come from tatva/__init__.py so there is still one source of truth.
 BUILD_VERSION = DISPLAY_VERSION
 BUILD_LABEL = f"{DISPLAY_VERSION} · {__version__}"
@@ -1702,9 +1702,16 @@ class TatvaPyBridge:
         }
         framework = framework_map.get(ext, "Neural Net Model")
 
+        # Hashed in chunks, not with a single f.read(). The whole-file read pulled the
+        # model into memory a second time purely to fingerprint it, which on a 1 GB
+        # ONNX is a 1 GB spike inside the process that is also about to hold the
+        # parsed graph and TVM's copy of the weights.
         try:
+            digest = hashlib.sha256()
             with open(model_path, "rb") as f:
-                sha256 = hashlib.sha256(f.read()).hexdigest()[:12]
+                for chunk in iter(lambda: f.read(4 * 1024 * 1024), b""):
+                    digest.update(chunk)
+            sha256 = digest.hexdigest()[:12]
         except Exception as e:
             return {"valid": False, "error": f"Could not read '{model_path}': {e}"}
 

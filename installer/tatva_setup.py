@@ -36,8 +36,13 @@ from tkinter import filedialog, ttk
 
 APP_NAME = "TATVA"
 APP_FULL_NAME = "TATVA Optimization Studio"
-APP_VERSION = "Beta 2.0"
-APP_BUILD = "2.0.0b1"
+# These two mirror DISPLAY_VERSION and __version__ in src/tatva/__init__.py. The
+# wizard is frozen without the tatva package -- it is a 15 MB Tkinter stub, and
+# importing the compiler into it would drag numpy, onnx and TVM along -- so it cannot
+# read them at runtime. build_installer.py compares these literals against the package
+# and refuses to build on a mismatch, which is what keeps the copy from drifting.
+APP_VERSION = "2.1"
+APP_BUILD = "2.1.0"
 PUBLISHER = "TATVA"
 EXE_NAME = "TATVA.exe"
 REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\TATVA"
