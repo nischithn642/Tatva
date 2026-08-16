@@ -2,9 +2,11 @@ name: TATVA CI
 
 on:
   push:
-    branches: [ main, master ]
+    # beta-2.0 is where the work happens. It was missing, so CI had not run on a single
+    # commit of this release -- the workflow was green because nothing ever triggered it.
+    branches: [ main, master, beta-2.0 ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ main, master, beta-2.0 ]
   workflow_dispatch:
 
 jobs:

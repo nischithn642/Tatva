@@ -79,14 +79,6 @@
           <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-box"/></svg>
           Generated Artifacts
         </button>
-        <button class="nav-item" id="nav-validation" data-view="validation">
-          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg>
-          Validation
-        </button>
-        <button class="nav-item" id="nav-evidence" data-view="evidence">
-          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-book"/></svg>
-          Engineering Evidence
-        </button>
       </div>
 
       <button class="nav-head" type="button" aria-expanded="true" aria-controls="g-tools"><span class="caret" aria-hidden="true"></span>Tools</button>
@@ -98,6 +90,23 @@
         <button class="nav-item" id="nav-diag" data-view="diag">
           <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-pulse"/></svg>
           Diagnostics
+        </button>
+      </div>
+
+      <!-- Collapsed by default. These four are the surfaces a first-time user does not
+           need to reach a compiled binary: two audit views and two experimental,
+           API-key-dependent tools. Nothing is removed -- the group is one click, and
+           switchView() opens it whenever something deep-links into one of them, so the
+           tree never claims you are somewhere it is not showing. -->
+      <button class="nav-head" type="button" aria-expanded="false" aria-controls="g-advanced"><span class="caret" aria-hidden="true"></span>Advanced</button>
+      <div class="nav-group" id="g-advanced" hidden>
+        <button class="nav-item" id="nav-validation" data-view="validation">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg>
+          Validation
+        </button>
+        <button class="nav-item" id="nav-evidence" data-view="evidence">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-book"/></svg>
+          Engineering Evidence
         </button>
         <button class="nav-item" id="nav-assistant" data-view="assistant">
           <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><use href="#i-spark"/></svg>
@@ -138,9 +147,7 @@
         <div class="page-head">
           <div class="eyebrow">Overview</div>
           <h1>Compile a model for bare-metal RISC-V</h1>
-          <p>Five stages, in order. Each one unlocks when the one before it has produced a result,
-             so you never have to guess what to do next. Everything runs on this machine — no
-             account, no upload, no network call.</p>
+          <p>Five stages, in order, each unlocked by the one before it. Everything runs on this machine.</p>
         </div>
 
         <div class="grid four">
@@ -170,8 +177,7 @@
 
         <div class="card">
           <h2>What is ready, and what is not</h2>
-          <p class="sub">The status of this build, not a plan. Experimental features work but are not
-            yet trustworthy for a production decision. Anything under Roadmap is not in this build at all.</p>
+          <p class="sub">The status of this build, not a plan. Roadmap items are not in it at all.</p>
           <div class="grid three">
             <div>
               <span class="badge available">Available</span>
@@ -212,9 +218,7 @@
         <div class="page-head">
           <div class="eyebrow">Stage 01 · Input</div>
           <h1>Load a trained model and pick the chip</h1>
-          <p>TATVA needs two things to start: the model you already trained, and the RISC-V
-             configuration you intend to run it on. Nothing is sent anywhere — the file is read
-             from disk in this process.</p>
+          <p>Two things to start: your trained model, and the RISC-V configuration you intend to run it on.</p>
         </div>
 
         <div class="notice err hidden" id="s1-error">
@@ -224,7 +228,7 @@
 
         <div class="card">
           <h2>1 · The model</h2>
-          <p class="sub">ONNX only. A <span class="mono">.pt</span> or <span class="mono">.keras</span> file can be picked here, but TATVA does not convert it — export to ONNX in PyTorch or TensorFlow first, then load that.</p>
+          <p class="sub">ONNX only — export from PyTorch or TensorFlow first; TATVA does not convert.</p>
 
           <div class="drop" id="drop">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><use href="#i-upload"/></svg>
@@ -287,8 +291,7 @@
              here instead of failing three stages later. -->
         <div class="card">
           <h2>Model formats TATVA can import</h2>
-          <p class="sub">Read from the frontend registry in this install. Availability is checked against
-            the packages actually importable here, not against a list of formats we would like to support.</p>
+          <p class="sub">Checked against the packages actually importable in this install.</p>
           <div class="table-wrap">
             <table>
               <thead><tr><th style="width:150px">Format</th><th style="width:130px">Status</th><th>What it means</th></tr></thead>
@@ -303,7 +306,14 @@
 
         <div class="card">
           <h2>2 · The target chip</h2>
-          <p class="sub">Read live from the compiler's target registry, so this list is always what the compiler will actually accept.</p>
+          <p class="sub">Read live from the compiler's target registry.</p>
+          <!-- Filled once a model is loaded: the chips are not equal choices after that
+               point, and which ones can carry this model is decided from the file rather
+               than left for stage 05 to discover. -->
+          <div class="notice hidden mt" id="target-fit">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg>
+            <span id="target-fit-text"></span>
+          </div>
           <div class="grid three" id="target-grid"></div>
           <div class="notice warn hidden mt" id="target-warn">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-alert"/></svg>
@@ -321,9 +331,7 @@
         <div class="page-head">
           <div class="eyebrow">Stage 02 · Analyze</div>
           <h1>Read the graph, the operators, the requirements</h1>
-          <p>TATVA imports the model into its own intermediate representation and counts what is
-             actually there. This is where an attention bottleneck — softmax feeding a matrix
-             multiply — gets detected, because that is the subgraph stage 04 can speed up.</p>
+          <p>Counts what is actually in the graph, and finds the attention pattern stage 04 can speed up.</p>
         </div>
 
         <div class="card">
@@ -376,10 +384,7 @@
         <div class="page-head">
           <div class="eyebrow">Stage 03 · Map</div>
           <h1>Match every operator against the chip's capability</h1>
-          <p>Each operator in the graph gets checked against what this target can actually execute,
-             and against how TATVA will lower it: a fused kernel, a scalar loop nest, or nothing at
-             all. An operator with no lowering is a compile failure in stage 05 — better to find it
-             here.</p>
+          <p>An operator with no lowering is a stage 05 compile failure. This is where it gets found.</p>
         </div>
 
         <div class="card">
@@ -427,9 +432,7 @@
             <div class="hidden mt" id="s3-fix-result"></div>
 
             <h2 style="margin-top:20px">Operator diagnostics</h2>
-            <p class="sub">Every operator in the graph against <span class="mono" id="s3-target">—</span>: whether it maps,
-              how it will be lowered, and — when it does not map — why, what that costs you, and whether
-              TATVA has a validated rewrite for it.</p>
+            <p class="sub">Every operator against <span class="mono" id="s3-target">—</span>: how it lowers, or why it does not.</p>
             <div class="table-wrap">
               <table>
                 <thead><tr>
@@ -454,7 +457,7 @@
           <div class="row between">
             <div>
               <h2>Target capability database</h2>
-              <p class="sub" style="margin-bottom:0">Everything <span class="mono" id="s3-cap-target">this target</span> can lower, whether or not your model uses it.</p>
+              <p class="sub" style="margin-bottom:0">Everything <span class="mono" id="s3-cap-target">this target</span> can lower, model or no model.</p>
             </div>
             <button class="btn" id="btn-caps">Show capabilities</button>
           </div>
@@ -482,9 +485,7 @@
         <div class="page-head">
           <div class="eyebrow">Stage 04 · Optimize</div>
           <h1>Choose the passes to apply</h1>
-          <p>Each pass rewrites the graph before code generation. Stage 05 measures the baseline
-             and the optimized build separately, so whatever you pick here gets compared against
-             doing nothing.</p>
+          <p>Each pass rewrites the graph before codegen. Stage 05 measures it against doing nothing.</p>
         </div>
 
         <!-- Natural-language configuration. It sets the same two switches the cards below
@@ -496,9 +497,7 @@
             <h2 style="margin-bottom:0">Describe what matters</h2>
             <span class="badge experimental">Experimental</span>
           </div>
-          <p class="sub">Optional. Say what you are optimising for and TATVA sets the passes below,
-            then tells you what it chose and why. It only moves the same switches you can click
-            yourself — nothing is built until stage 05.</p>
+          <p class="sub">Optional. Say what you are optimising for; it sets the switches below and says why.</p>
 
           <div class="row" style="flex-wrap:nowrap">
             <input class="input" id="nl-input" style="font-family:var(--sans)"
@@ -530,9 +529,8 @@
                 <span class="name">Softmax fusion</span>
                 <span class="badge available">Available</span>
               </div>
-              <div class="desc">Replaces the generic multi-pass, heap-allocated softmax with a
-                stack-allocated single-pass kernel using Schraudolph's fast exponential.
-                This is the pass the measured gain comes from.</div>
+              <div class="desc">A single-pass stack-allocated kernel in place of the generic
+                heap-allocated softmax. This is where the measured gain comes from.</div>
               <div class="flags">relax → single-pass kernel · accuracy checked against host ONNX Runtime</div>
             </button>
 
@@ -542,8 +540,7 @@
                 <span class="name">INT8 quantization</span>
                 <span class="badge experimental">Experimental</span>
               </div>
-              <div class="desc">Symmetric QDQ quantization with activation scales calibrated at the
-                99.9th percentile. It shrinks the binary, but on a scalar RISC-V core with no INT8
+              <div class="desc">Shrinks the binary, but on a scalar RISC-V core with no INT8
                 dot-product instruction it runs <b>slower</b>, not faster.</div>
               <div class="flags">smaller footprint · higher cycle count · turn on only if SRAM is the constraint</div>
             </button>
@@ -551,8 +548,7 @@
 
           <div class="notice warn hidden mt" id="s4-quant-warn">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-alert"/></svg>
-            <span><b>INT8 is on.</b> Expect a higher cycle count than the FP32 baseline on this
-              target. That is a property of scalar RISC-V, not a bug — the gain is footprint.</span>
+            <span><b>INT8 is on.</b> Expect a higher cycle count than the FP32 baseline — the gain is footprint.</span>
           </div>
         </div>
 
@@ -572,9 +568,7 @@
         <div class="page-head">
           <div class="eyebrow">Stage 05 · Generate</div>
           <h1>Build the RISC-V binary and measure it</h1>
-          <p>TVM emits C99, the RISC-V cross-compiler links it against the minimal runtime, and
-             QEMU runs it in system mode with the cycle counter read on the target itself. Both
-             the baseline and the optimized build are measured, in the same run.</p>
+          <p>TVM emits C99, GCC links it, QEMU runs it — baseline and optimized, in the same run.</p>
         </div>
 
         <div class="notice warn hidden" id="s5-blocked">
@@ -648,8 +642,7 @@
         <div class="page-head">
           <div class="eyebrow">Report</div>
           <h1>Benchmark and numerical parity</h1>
-          <p>Everything below comes from an actual emulated run. If a build has not completed,
-             this page stays empty rather than showing a placeholder number.</p>
+          <p>Everything below comes from an actual emulated run. No build, no numbers.</p>
         </div>
 
         <div class="empty" id="report-empty">
@@ -763,9 +756,7 @@
         <div class="page-head">
           <div class="eyebrow">Results</div>
           <h1>Generated artifacts</h1>
-          <p>The files this build actually wrote, discovered by reading the build directory —
-             not a list of filenames a build is expected to produce. Each one is shown with its
-             real size and SHA-256, and can be opened here.</p>
+          <p>The files this build actually wrote, read from the build directory with real sizes and hashes.</p>
         </div>
 
         <div class="empty" id="artifacts-empty">
@@ -806,9 +797,7 @@
         <div class="page-head">
           <div class="eyebrow">Results</div>
           <h1>Validation</h1>
-          <p>Separate from the benchmark on purpose. The benchmark says how fast it ran;
-             this page says whether what ran was correct. A check TATVA does not implement
-             is listed as not implemented — it is never counted as a pass.</p>
+          <p>The benchmark says how fast it ran; this page says whether what ran was correct.</p>
         </div>
 
         <div class="empty" id="val-empty">
@@ -851,8 +840,7 @@
 
           <div class="card">
             <h2>Checks TATVA does not implement</h2>
-            <p class="sub">Listed because leaving them out would make the section above look complete.
-              These are not failures and not passes — they were never run.</p>
+            <p class="sub">Not failures and not passes — they were never run.</p>
             <div class="table-wrap">
               <table>
                 <thead><tr><th style="width:230px">Check</th><th style="width:120px">Status</th><th>What it would take</th></tr></thead>
@@ -868,9 +856,7 @@
         <div class="page-head">
           <div class="eyebrow">Results</div>
           <h1>Engineering evidence</h1>
-          <p>What TATVA changed, in what order, and what it checked afterwards. Every graph
-             rewrite and every pass is listed with the validation that followed it — including
-             the rewrites that were discarded.</p>
+          <p>What TATVA changed, in order, each with the validation that followed it.</p>
         </div>
 
         <div class="empty" id="ev-empty">
@@ -899,8 +885,7 @@
 
           <div class="card">
             <h2>Graph repairs</h2>
-            <p class="sub">Rewrites applied to make an unsupported operator compile, each with the
-              exact replacement and the check that accepted it.</p>
+            <p class="sub">Rewrites that made an unsupported operator compile, and the check that accepted each.</p>
             <div class="empty" id="ev-repair-empty">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><use href="#i-spark"/></svg>
               <div>No repair was needed — every operator mapped as it was.</div>
@@ -921,8 +906,7 @@
 
           <div class="card">
             <h2>Audit trail</h2>
-            <p class="sub">Every stage event, as it was recorded during the run. Written to
-              <span class="mono">audit_trail.json</span> in each build directory.</p>
+            <p class="sub">Every stage event, as written to <span class="mono">audit_trail.json</span> during the run.</p>
             <div class="term auto" id="ev-audit"></div>
           </div>
         </div>
@@ -933,8 +917,7 @@
         <div class="page-head">
           <div class="eyebrow">Tools</div>
           <h1>Diagnostics</h1>
-          <p>Toolchain health, and where every binary was found. This is the same check
-             <span class="mono">tatva doctor</span> performs.</p>
+          <p>Toolchain health and resolved paths — the same check <span class="mono">tatva doctor</span> performs.</p>
         </div>
 
         <div class="card">
@@ -969,8 +952,7 @@
           <div class="row between">
             <div>
               <h2>Install the RISC-V toolchain</h2>
-              <p class="sub" style="margin-bottom:0">Downloads pinned prebuilt binaries from the xPack project
-                and unpacks them into your user folder. Nothing else on the machine is touched.</p>
+              <p class="sub" style="margin-bottom:0">Pinned xPack binaries, unpacked into your user folder. Nothing else is touched.</p>
             </div>
             <button class="btn primary" id="btn-install-tc">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><use href="#i-download"/></svg>
@@ -997,9 +979,7 @@
         <div class="page-head">
           <div class="eyebrow">Tools · Experimental</div>
           <h1>Assistant</h1>
-          <p>Answers questions about TATVA and about compiler errors. It routes to whichever LLM
-             you have configured — a local Ollama server, or a provider key you supply. With none
-             configured it says so rather than guessing.</p>
+          <p>Answers questions about TATVA and compiler errors, via whichever LLM you have configured.</p>
         </div>
 
         <div class="card">
@@ -1016,9 +996,7 @@
         <div class="page-head">
           <div class="eyebrow">Tools · Experimental</div>
           <h1>Project scaffolding</h1>
-          <p>Generates a starter RISC-V project from a description. When no LLM is reachable it
-             falls back to a fixed template and says so — the output is then the same for everyone,
-             regardless of what you typed.</p>
+          <p>Generates a starter RISC-V project from a description, or a fixed template when no LLM is reachable.</p>
         </div>
 
         <div class="card">

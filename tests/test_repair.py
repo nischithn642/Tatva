@@ -42,18 +42,12 @@ def _ir(mod):
 # and a test whose inputs make both graphs produce NaN proves nothing about the rewrite.
 CASES: dict[str, tuple] = {
     "nn.silu": (lambda x: relax.op.nn.silu(x), 1),
-    "nn.gelu": (lambda x: relax.op.nn.gelu(x), 1),
     "nn.gelu_tanh": (lambda x: relax.op.nn.gelu_tanh(x), 1),
-    "nn.leakyrelu": (lambda x: relax.op.nn.leakyrelu(x, 0.2), 1),
-    "negative": (lambda x: relax.op.negative(x), 1),
     "square": (lambda x: relax.op.square(x), 1),
     "abs": (lambda x: relax.op.abs(x), 1),
     "minimum": (lambda a, b: relax.op.minimum(a, b), 2),
     "maximum": (lambda a, b: relax.op.maximum(a, b), 2),
-    "greater": (lambda a, b: relax.op.greater(a, b), 2),
     "rsqrt": (lambda x: relax.op.rsqrt(relax.op.abs(x)), 1),
-    "sign": (lambda x: relax.op.sign(x), 1),
-    "broadcast_to": (lambda x: relax.op.broadcast_to(x, relax.ShapeExpr((3, 2, 4))), 1),
 }
 
 
@@ -61,6 +55,27 @@ CASES: dict[str, tuple] = {
 def test_every_rule_has_a_case() -> None:
     """A new repair rule must arrive with a case in this file, not without one."""
     assert set(CASES) == set(REPAIR_RULES.keys())
+
+
+@pytest.mark.unit
+def test_no_rule_targets_an_operator_the_backend_already_lowers() -> None:
+    """
+    A rewrite is a repair only for an operator that cannot be lowered. For one that can,
+    it is a pessimisation, and `_rewrite_module` applies the whole table as soon as
+    anything in the graph is unsupported -- so a rule here for a supported operator does
+    not sit dormant, it silently decomposes working code in every repair that runs.
+
+    This is not hypothetical. SUPPORTED_OPS was hand-written and under-reported the
+    backend by twenty-five operators; six of them had rules, and a model needing `abs`
+    repaired came back with its `negative` and `nn.leakyrelu` rewritten too, reported as
+    operators that had been fixed. Widening SUPPORTED_OPS is what creates the overlap, so
+    the guard belongs here, where it fails the moment the two disagree.
+    """
+    overlap = sorted(set(REPAIR_RULES) & set(SUPPORTED_OPS))
+    assert overlap == [], (
+        f"{overlap} are in SUPPORTED_OPS and still carry a repair rule. If the backend "
+        f"lowers them, drop the rule; if it does not, drop them from SUPPORTED_OPS."
+    )
 
 
 @pytest.mark.unit
@@ -268,17 +283,19 @@ def test_repeated_operator_is_counted_not_duplicated() -> None:
 
 
 @pytest.mark.unit
-def test_gelu_rewrite_matches_the_reference_definition() -> None:
+def test_gelu_tanh_rewrite_matches_the_reference_definition() -> None:
     """
-    Checked against Python's own `math.erf` rather than against TVM, so both sides of
-    the engine's comparison would have to be wrong in the same way for this to pass by
-    accident. (scipy is not a dependency of this project; erf is applied elementwise.)
+    Checked against the closed form written out in numpy rather than against TVM, so
+    both sides of the engine's own comparison would have to be wrong in the same way for
+    this to pass by accident.
+
+    gelu_tanh is the most involved rewrite left in the table, and the only one whose
+    identity is a formula rather than a rearrangement -- it is worth pinning to something
+    outside the engine. (The same test used to cover the erf-form gelu; that rule is gone
+    because the backend lowers nn.gelu directly, and the corpus runs it on RV64GC against
+    onnxruntime, which is a stronger check than this one.)
     """
-    import math
-
-    erf = np.vectorize(math.erf)
-
-    result = repair_graph(_ir(_module(lambda x: relax.op.nn.gelu(x))), VARIANT)
+    result = repair_graph(_ir(_module(lambda x: relax.op.nn.gelu_tanh(x))), VARIANT)
     assert result.applied
 
     lowered = relax.transform.LegalizeOps()(result.model_ir.mod)
@@ -286,6 +303,6 @@ def test_gelu_rewrite_matches_the_reference_definition() -> None:
 
     x = np.random.default_rng(7).standard_normal((2, 4)).astype("float32")
     got = vm["main"](tvm.runtime.tensor(x)).numpy()
-    expected = 0.5 * x * (1.0 + erf(x / np.sqrt(2.0)))
+    expected = 0.5 * x * (1.0 + np.tanh(np.sqrt(2.0 / np.pi) * (x + 0.044715 * x**3)))
 
     assert np.max(np.abs(got - expected)) <= 1e-6

@@ -34,7 +34,7 @@ so it rendered as a permanently broken image at the top of the README. -->
 > folder to a measured result, and lists the failures worth recognising. This section is
 > the short version.
 
-**The app is `TATVA.exe`.** Unzip `TATVA-2.1-windows.zip` anywhere and double-click
+**The app is `TATVA.exe`.** Unzip `TATVA-2.1.1-windows.zip` anywhere and double-click
 it — no Python, no install, no account.
 
 **All five stages work on the unzipped folder, offline, with nothing else installed.**

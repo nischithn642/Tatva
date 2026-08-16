@@ -148,14 +148,6 @@ def _rules() -> dict[str, RepairRule]:
         (x,) = args
         return relax.op.multiply(x, relax.op.sigmoid(x))
 
-    def gelu(call, args, dtype):
-        (x,) = args
-        # 0.5 * x * (1 + erf(x / sqrt(2))) -- the exact definition, not an approximation.
-        return relax.op.multiply(
-            relax.op.multiply(x, const(0.5, dtype)),
-            relax.op.add(relax.op.erf(relax.op.multiply(x, const(1.0 / math.sqrt(2.0), dtype))), const(1.0, dtype)),
-        )
-
     def gelu_tanh(call, args, dtype):
         (x,) = args
         # 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3))). This is the *definition*
@@ -170,10 +162,6 @@ def _rules() -> dict[str, RepairRule]:
             relax.op.multiply(x, const(0.5, dtype)),
             relax.op.add(relax.op.tanh(inner), const(1.0, dtype)),
         )
-
-    def negative(call, args, dtype):
-        (x,) = args
-        return relax.op.multiply(x, const(-1.0, dtype))
 
     def square(call, args, dtype):
         (x,) = args
@@ -191,63 +179,34 @@ def _rules() -> dict[str, RepairRule]:
         a, b = args
         return relax.op.where(relax.op.less(a, b), b, a)
 
-    def greater(call, args, dtype):
-        a, b = args
-        # a > b is exactly b < a, including for NaN (both false). Argument order only.
-        return relax.op.less(b, a)
-
     def rsqrt(call, args, dtype):
         (x,) = args
         return relax.op.divide(const(1.0, dtype), relax.op.sqrt(x))
 
-    def sign(call, args, dtype):
-        (x,) = args
-        zero = const(0.0, dtype)
-        return relax.op.where(
-            relax.op.less(x, zero),
-            const(-1.0, dtype),
-            relax.op.where(relax.op.less(zero, x), const(1.0, dtype), zero),
-        )
-
-    def broadcast_to(call, args, dtype):
-        x = args[0]
-        shape = call.args[1]
-        # Adding an explicit zero tensor of the destination shape gives the broadcast
-        # for free through `add`'s own broadcasting, and adding zero is exact in IEEE
-        # 754 for every value except -0.0, whose sign it flips. Models do not depend on
-        # the sign of zero downstream of a broadcast.
-        #
-        # `full` rather than `zeros`: they are the same tensor, but only `full` is in
-        # SUPPORTED_OPS. Emitting `zeros` traded one unmapped operator for another,
-        # which the structural check caught -- the rewrite "succeeded" and the graph
-        # was still blocked.
-        return relax.op.add(x, relax.op.full(shape, const(0.0, dtype), dtype))
-
-    def leakyrelu(call, args, dtype):
-        (x,) = args
-        alpha = float(getattr(call.attrs, "alpha", 0.01))
-        return relax.op.where(relax.op.less(x, const(0.0, dtype)), relax.op.multiply(x, const(alpha, dtype)), x)
-
+    # Every rule below is for an operator the C backend cannot lower. That is not a
+    # stylistic rule, it is the condition under which a rewrite is a repair at all --
+    # see `test_no_rule_targets_an_operator_the_backend_already_lowers`.
+    #
+    # Six rules used to live here that no longer do: nn.gelu, nn.leakyrelu, negative,
+    # greater, sign and broadcast_to. They were written against a SUPPORTED_OPS that
+    # under-reported the backend; all six operators lower directly, and the corpus runs
+    # them on RV64GC against onnxruntime. Keeping their rules was not merely dead code.
+    # `_rewrite_module` applies the whole table whenever anything in the graph is
+    # unsupported, so a model that needed `abs` repaired also had its perfectly good
+    # `negative` and `nn.leakyrelu` swapped for multi-operator decompositions -- slower
+    # code, on a tool whose entire output is a cycle count, reported back to the user as
+    # operators that had been "repaired". Git history has them if the backend regresses.
     return {
         "nn.silu": RepairRule(
             op="nn.silu", summary="Rewrite as x * sigmoid(x).",
             replacement_ops=("multiply", "sigmoid"),
             identity="silu(x) = x * sigmoid(x)", exact=True, build=silu,
         ),
-        "nn.gelu": RepairRule(
-            op="nn.gelu", summary="Rewrite as 0.5x * (1 + erf(x / sqrt(2))).",
-            replacement_ops=("multiply", "add", "erf"),
-            identity="gelu(x) = 0.5x * (1 + erf(x / sqrt(2)))", exact=True, build=gelu,
-        ),
         "nn.gelu_tanh": RepairRule(
             op="nn.gelu_tanh", summary="Rewrite as the tanh form it is defined by.",
             replacement_ops=("multiply", "add", "tanh"),
             identity="gelu_tanh(x) = 0.5x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 x^3)))",
             exact=True, build=gelu_tanh,
-        ),
-        "negative": RepairRule(
-            op="negative", summary="Rewrite as multiplication by -1.",
-            replacement_ops=("multiply",), identity="-x = x * -1", exact=True, build=negative,
         ),
         "square": RepairRule(
             op="square", summary="Rewrite as x * x.",
@@ -268,29 +227,9 @@ def _rules() -> dict[str, RepairRule]:
             replacement_ops=("where", "less"),
             identity="max(a, b) = a < b ? b : a", exact=True, build=maximum,
         ),
-        "greater": RepairRule(
-            op="greater", summary="Rewrite as the reversed less-than.",
-            replacement_ops=("less",), identity="a > b = b < a", exact=True, build=greater,
-        ),
         "rsqrt": RepairRule(
             op="rsqrt", summary="Rewrite as 1 / sqrt(x).",
             replacement_ops=("divide", "sqrt"), identity="rsqrt(x) = 1 / sqrt(x)", exact=True, build=rsqrt,
-        ),
-        "sign": RepairRule(
-            op="sign", summary="Rewrite as nested selects on the comparison with zero.",
-            replacement_ops=("where", "less"),
-            identity="sign(x) = x < 0 ? -1 : (0 < x ? 1 : 0)", exact=True, build=sign,
-        ),
-        "broadcast_to": RepairRule(
-            op="broadcast_to", summary="Rewrite as an add against a zero tensor of the target shape.",
-            replacement_ops=("add", "full"),
-            identity="broadcast_to(x, s) = x + zeros(s)", exact=True, build=broadcast_to,
-            constraints=("flips the sign of -0.0, which no downstream operator observes",),
-        ),
-        "nn.leakyrelu": RepairRule(
-            op="nn.leakyrelu", summary="Rewrite as a select between x and alpha * x.",
-            replacement_ops=("where", "less", "multiply"),
-            identity="leakyrelu(x, a) = x < 0 ? a*x : x", exact=True, build=leakyrelu,
         ),
     }
 

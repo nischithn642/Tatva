@@ -1367,6 +1367,19 @@ class TatvaPyBridge:
         self._repair_lock = threading.Lock()
         self._repaired: dict[tuple[str, str], Any] = {}
 
+    def _held_repair(self, model_path: str, target_name: str) -> Any:
+        """
+        The applied repair being held for this (model, target), or None.
+
+        One accessor rather than three call sites reaching into the dict, because the key
+        has to be built the same way every time -- `attempt_auto_fix` stores under the
+        absolute path, and a lookup with the path as typed would miss and silently report
+        the unrepaired graph.
+        """
+        with self._repair_lock:
+            result = self._repaired.get((os.path.abspath(model_path), target_name))
+        return result if result is not None and getattr(result, "applied", False) else None
+
     def select_file(self) -> str:
         """
         Open a native file browser for model selection.
@@ -1837,7 +1850,14 @@ class TatvaPyBridge:
                     "error": f"Unknown target '{target_name}'. Known targets: {', '.join(sorted(TARGETS))}.",
                 }
 
-            report = analyze_graph(import_model(model_path))
+            # A repair from Attempt Auto-Fix is part of the graph the user is looking at,
+            # so it has to be part of the graph this stage reports on. Re-importing the
+            # file unconditionally is what made the rewrite look broken: the repair ran,
+            # validated and was held for the build, the frontend re-mapped to show the
+            # result, and the table came back showing the original unmapped operators and
+            # offering the same fix again. The rewrite worked; only the screen disagreed.
+            repair = self._held_repair(model_path, variant.name)
+            report = analyze_graph(repair.model_ir if repair is not None else import_model(model_path))
             histogram = getattr(report, "op_histogram", {}) or {}
 
             operators = []
@@ -1895,6 +1915,13 @@ class TatvaPyBridge:
                 "auto_fix_available": bool(fixable),
                 "warnings": warnings,
                 "ready": not unsupported,
+                # Whether the rows above describe the file on disk or the rewritten graph
+                # that stage 05 will actually compile. The frontend says which; without
+                # this it would present a repaired graph as if it had always been clean.
+                "repaired": repair is not None,
+                "repaired_ops": list(repair.repaired_ops) if repair is not None else [],
+                "repair_status": repair.status if repair is not None else "",
+                "repair_message": repair.message if repair is not None else "",
             }
         except Exception as e:
             return {"success": False, "error": f"Operator mapping failed: {e}", "diagnosis": _diagnose(e)}
@@ -1983,6 +2010,27 @@ class TatvaPyBridge:
             }
         except Exception as e:
             return {"success": False, "error": f"Capability lookup failed: {e}"}
+
+    def fit_targets(self, model_path: str) -> dict[str, Any]:
+        """
+        Judge every target against the loaded model, and name the one that fits best.
+
+        Stage 01 listed six chips as six equal choices. They are not equal once a model
+        is loaded: a model whose weights overrun the emulator's load ceiling fails on all
+        six, and a float model on a target with no FPU builds fine and then emulates
+        every multiply in software. Both were discoverable only by running the pipeline
+        and waiting for it to fail or crawl.
+
+        Nothing here compiles anything -- the figures are read out of the model file and
+        compared against the constants the build uses.
+        """
+        try:
+            from tatva.fit import fit_targets
+
+            return fit_targets(model_path)
+        except Exception as e:
+            return {"success": False, "error": f"Target fit check failed: {e}",
+                    "diagnosis": _diagnose(e), "targets": []}
 
     def get_model_formats(self) -> dict[str, Any]:
         """
@@ -2204,11 +2252,8 @@ class TatvaPyBridge:
         # ---- repair, if the graph needs it and the user has not opted out
         build_ir = None
         if unsupported:
-            key = (model_path, variant.name)
-            with self._repair_lock:
-                cached = self._repaired.get(key)
-
-            result = cached
+            key = (os.path.abspath(model_path), variant.name)
+            result = self._held_repair(model_path, variant.name)
             if result is None and auto_fix:
                 from tatva.repair import repair_graph
 

@@ -89,12 +89,38 @@ def test_unmapped_operator_with_a_rule_offers_the_fix_and_names_the_blockage() -
 @pytest.mark.unit
 def test_unmapped_operator_without_a_rule_says_so_rather_than_offering_a_button() -> None:
     """§33: a control whose backend behaviour does not exist must not be rendered as if
-    it did. `nn.conv2d` has no rewrite, so the row must carry no fix."""
-    cap = capability_for("nn.conv2d", RV64)
+    it did. `cumsum` has no rewrite, so the row must carry no fix.
+
+    This has now been written against two operators that turned out to be supported --
+    nn.conv2d first, then nn.conv3d -- and both times the test passed because the example
+    was picked from SUPPORTED_OPS rather than from the backend. `cumsum` is picked the
+    other way round: TVM's LegalizeOps has no rule for it, so the relax op is still
+    standing after legalization with no PrimFunc generated, which is what "no kernel"
+    actually means. tests/test_onnx_corpus.py runs the model and shows the refusal.
+    """
+    cap = capability_for("cumsum", RV64)
     assert cap.status == STATUS_UNMAPPED
     assert cap.auto_fix_available is False
     assert cap.auto_fix_summary == ""
-    assert "Convolution has no kernel" in cap.reason
+    assert "no lowering rule for cumsum" in cap.reason
+
+
+@pytest.mark.unit
+def test_no_unfixable_reason_describes_a_supported_operator() -> None:
+    """
+    The explanations for why an operator cannot be lowered must not name one that is.
+
+    These strings are the most confident text in the product -- they tell the user, in
+    specific technical terms, that what they want is impossible. Five of them described
+    operators the compiler builds and runs (equal, exp, log, nn.conv2d, nn.max_pool2d),
+    which is the worst version of this failure: not silence, but a convincing wrong
+    answer. Nothing here is checked against the backend at run time, so it is checked
+    here instead.
+    """
+    from tatva.capabilities import _UNFIXABLE_REASONS
+
+    described = sorted(set(_UNFIXABLE_REASONS) & set(SUPPORTED_OPS))
+    assert described == [], f"{described} are supported and still have a reason they cannot be"
 
 
 @pytest.mark.unit

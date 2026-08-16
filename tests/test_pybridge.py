@@ -322,3 +322,50 @@ def test_scan_hardware_boards_does_not_claim_real_silicon(bridge) -> None:
 
     assert res["found"] is False
     assert "SIMULATION" in res["status"].upper()
+
+
+@pytest.mark.unit
+def test_mapping_reports_the_repaired_graph_after_an_auto_fix(bridge) -> None:
+    """
+    Stage 03 has to describe the graph the build will use, not the file on disk.
+
+    `attempt_auto_fix` rewrites the unmapped operators, validates the result and holds
+    the repaired module for the build. `map_operators` re-imported the file every time,
+    so the re-map the frontend runs to confirm a repair showed the original operators
+    again, still unmapped, still offering the same fix. Nothing was broken except the
+    screen -- the repaired graph was compiled -- but from the mapping table the Attempt
+    Auto-Fix button did nothing at all.
+    """
+    pytest.importorskip("tvm")
+    model = "models/model_repairable.onnx"
+
+    before = bridge.map_operators(model, "RV64GC")
+    assert before["success"] is True
+    assert before["ready"] is False
+    assert before["repaired"] is False
+    assert before["fixable"], "fixture is supposed to have repairable operators"
+
+    fix = bridge.attempt_auto_fix(model, "RV64GC")
+    assert fix["status"] == "REPAIRED"
+
+    after = bridge.map_operators(model, "RV64GC")
+    assert after["ready"] is True
+    assert after["unsupported"] == []
+    assert after["repaired"] is True
+    assert sorted(after["repaired_ops"]) == sorted(before["fixable"])
+
+
+@pytest.mark.unit
+def test_a_repair_does_not_leak_to_another_target(bridge) -> None:
+    """
+    A rewrite is validated against one target's operator set. Reporting it as part of the
+    graph on a target it was never checked against would be a claim nobody made.
+    """
+    pytest.importorskip("tvm")
+    model = "models/model_repairable.onnx"
+
+    assert bridge.attempt_auto_fix(model, "RV64GC")["status"] == "REPAIRED"
+
+    other = bridge.map_operators(model, "RV32IMC")
+    assert other["repaired"] is False
+    assert other["ready"] is False

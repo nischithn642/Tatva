@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.1.1] - 2026-08-16 (`2.1.1`)
+
+The operator list was written by hand, and it was wrong in both directions. This release
+replaces it with one that is measured: no operator name is claimed as supported without an
+ONNX model in the test corpus that compiles for RV64GC, boots under QEMU and matches ONNX
+Runtime to 1e-4. Along the way it fixes the failure the project was most exposed to — a
+model that compiled, ran, reported a cycle count and returned zeros.
+
+A patch release rather than a rebuild of 2.1: `v2.1.0` is published with two assets built
+from commit `4904396`, and their SHA-256 sums are printed in its release notes. Replacing
+those bytes in place would break every checksum already handed out.
+
+### Fixed
+- **A model whose operator has no kernel is refused instead of measured.** The harness
+  emitter wrote C only for bindings that legalized into a `call_tir` and skipped every
+  other one in silence. `relax.cumsum` survives `LegalizeOps`, so a `CumSum` model
+  compiled cleanly, booted, printed `RUN_CYCLES` and returned a tensor of `0.0` — the
+  graph's own output, never written by anything. The emitter now distinguishes a binding
+  nothing reads, which stays skippable, from one something reads and nothing writes, which
+  raises a `CompilationError` naming the operator. This is the same class of bug that made
+  LayerNorm and Gather return zeros, still live in a second place.
+- **`Shape` no longer leaves an unwritten buffer behind.** `Shape` becomes the pair
+  `shape_of` / `call_pure_packed("relax.run.shape_to_tensor")`, neither of which lowers to
+  a kernel — but the second is a real int64 tensor that a downstream `take` dereferences.
+  In `models/model.onnx` that is `Gather(Shape(x), 0)` reading zeros, harmless only by
+  accident. The extents are constants after shape inference, so they are now emitted as
+  stores, which is what the capability table always claimed for `shape_to_tensor`.
+- **Eleven operators were reported as unsupported by a backend that compiles them.**
+  `Conv` at one and three spatial dimensions, `ConvTranspose`, `AveragePool`, `PRelu`,
+  `LogSoftmax`, `Resize`, `InstanceNormalization`, `Hardmax`, `Trilu`, and the `variance`
+  and `argmax`/`one_hot` those last two decompose to. Each legalizes into a real C loop
+  nest — conv1d six nested loops, conv2d nine, conv3d twelve. Three of them carried a
+  written explanation of why they could never work; those explanations described nothing
+  that was true. `SUPPORTED_OPS` is now 66 names.
+- **`Pad`, `Tile` and `Einsum` were reported under the name `call_tir`.** The ONNX frontend
+  lowers them straight to a TIR PrimFunc with no operator node, and the analysis reported
+  TVM's calling convention rather than anything in the user's file — a name that cannot be
+  looked up, removed or replaced. The callee's name is reported now.
+- **One operator is still refused, and it is now refused for a measured reason.** TVM has
+  no lowering rule for `cumsum`; the relax op is still standing after legalization with no
+  PrimFunc generated, which is what "no kernel" actually means. That test — survives
+  legalization — replaced the guesswork that had put three convolutions on the same list.
+
+### Added
+- **An ONNX corpus of 88 graphs, 80 of which run end to end.** `tests/onnx_corpus.py`
+  builds them from `onnx.helper` at collection time: 36 single-operator graphs, several
+  whole models, and deliberately broken files. Each runnable one is compiled for RV64GC,
+  run under QEMU and compared against ONNX Runtime at 1e-4. Twenty of the builders are new
+  in this release, one for every operator claim above.
+- **The capability tables are pinned to each other by tests.** The lowering table is
+  exactly `SUPPORTED_OPS`; the repair rules and the "cannot be fixed" reasons are disjoint
+  from it; every name in it is a real relax operator; and everything the corpus runs is in
+  it. A claim shown in the UI can no longer drift from what the backend does.
+
 ## [2.1] - 2026-08-15 (`2.1.0`)
 
 Beta 2.0 compiled the models in `models/` and nothing much larger. This release is

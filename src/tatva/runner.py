@@ -19,7 +19,7 @@ from typing import Any
 
 import numpy as np
 
-from tatva.compiler import ModelIR, TargetVariant
+from tatva.compiler import ModelIR, TargetVariant, c_safe_name
 
 # Single shared exception type. There used to be a second, unrelated CompilationError
 # defined here, which meant diagnostics.classify_failure() never recognised the errors
@@ -520,6 +520,21 @@ void sbi_print_uint(uint64_t val) {
 }
 
 void sbi_print_float(float val) {
+    // Non-finite values first. (uint64_t)val is undefined for NaN and infinity, and on
+    // RISC-V the conversion saturates to 2^64-1, so a model that overflowed printed
+    // "FIRST_LOGITS: 18446744073709551615.//////" -- which reads as a broken emulator
+    // rather than as the broken computation it actually is. Sqrt of a negative input
+    // reaches here on any run whose dummy data crosses zero.
+    union { float f; uint32_t u; } tatva_bits;
+    tatva_bits.f = val;
+    if ((tatva_bits.u & 0x7F800000u) == 0x7F800000u) {
+        if (tatva_bits.u & 0x007FFFFFu) {
+            sbi_print("nan");
+        } else {
+            sbi_print((tatva_bits.u & 0x80000000u) ? "-inf" : "inf");
+        }
+        return;
+    }
     if (val < 0) {
         sbi_print("-");
         val = -val;
@@ -1008,11 +1023,13 @@ def c_identifier(name: str) -> str:
     ONNX permits names such as 'input.1' or '/encoder/Add_output_0', which TVM
     carries through into its variable names. Emitting those verbatim produces C
     that does not parse.
+
+    Delegates to compiler.c_safe_name, which is the same rule import_model applies to
+    the graph itself. These used to be one function copied into two files; if they ever
+    disagreed, main.c and operators.c would spell the same tensor differently and the
+    link would fail on a name neither file appears to contain.
     """
-    safe = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in str(name))
-    if not safe or safe[0].isdigit():
-        safe = "t_" + safe
-    return safe
+    return c_safe_name(name)
 
 
 def input_fill_kind(name: str, dtype: str) -> str:
@@ -1374,6 +1391,48 @@ def verify_target(variant: TargetVariant) -> dict[str, Any]:
             return {"status": "fail", "output": "", "error": f"QEMU execution error: {e}"}
 
 
+def static_shape_tensor_values(call: Any) -> list[int] | None:
+    """The int64 elements of a `shape_to_tensor` call whose shape is known at compile time.
+
+    A `Shape` node in the ONNX graph becomes the pair `lv = R.shape_of(x)` /
+    `lv1 = R.call_pure_packed("relax.run.shape_to_tensor", lv)`. Neither survives
+    `LegalizeOps` as a `call_tir`, so the harness emitter has no kernel to call for
+    either -- but `lv1` is a real int64 tensor with a real buffer, and a downstream
+    `take` will happily dereference it. In `models/model.onnx` that is
+    `Gather(Shape(x), 0)`, reading a buffer nothing had written.
+
+    The values are not actually unknown. Shape inference has already resolved the
+    extents to constants by this point, which is why they can be emitted as stores
+    instead of computed -- exactly what the capability table has always claimed for
+    `shape_to_tensor`. Returns None if this is not that call, or if any extent is
+    still symbolic, in which case the caller refuses rather than guessing.
+    """
+    from tvm import relax
+
+    if not isinstance(call, relax.Call):
+        return None
+    if str(getattr(call.op, "name", call.op)) != "relax.call_pure_packed":
+        return None
+    if len(call.args) < 2:
+        return None
+    callee = call.args[0]
+    if str(getattr(callee, "global_symbol", "")) != "relax.run.shape_to_tensor":
+        return None
+    sinfo = call.args[1].struct_info
+    values = getattr(sinfo, "values", None)
+    if values is None:
+        return None
+    out: list[int] = []
+    for value in values:
+        # An IntImm carries a Python int; a symbolic tir.Var carries nothing, and a
+        # dimension the compiler cannot name is a dimension it must not invent.
+        extent = getattr(value, "value", None)
+        if not isinstance(extent, int):
+            return None
+        out.append(extent)
+    return out
+
+
 def compile_model(
     model_ir: ModelIR,
     variant: TargetVariant,
@@ -1463,7 +1522,14 @@ def compile_model(
     for name, sinfo, is_input in vars_to_process:
         if not hasattr(sinfo, "shape") or sinfo.shape is None:
             continue
-        shape = [int(dim) for dim in sinfo.shape]
+        try:
+            shape = [int(dim) for dim in sinfo.shape]
+        except (TypeError, ValueError):
+            # A symbolic dimension. NonZero's output is R.Tensor((2, nonzero_numbers)),
+            # whose extent is known only once the data is seen, and int() on that raises
+            # a bare TypeError out of the middle of code generation. Leaving the tensor
+            # unmapped routes it to the diagnosed error below instead.
+            continue
         dtype = str(sinfo.dtype)
 
         dtype_code, dtype_bits = map_dtype(dtype)
@@ -1721,18 +1787,109 @@ def compile_model(
         ]
     )
 
+    def no_buffer_error(what: str, var_name: str, sinfo: Any) -> CompilationError:
+        """
+        Explain why a value cannot be given a buffer, in terms of the model.
+
+        Every tensor in a bare-metal build is allocated before the program runs, so a
+        value whose size is not known at compile time has nowhere to live. There is more
+        than one way to arrive here and they need different advice, so the reason is
+        worked out rather than assumed -- this used to say "tuple of outputs" for every
+        case, including NonZero, whose problem is the opposite.
+        """
+        if isinstance(sinfo, relax.TupleStructInfo):
+            why = (
+                "it is a tuple of several tensors. Operators returning more than one "
+                "output -- BatchNorm, LSTM, Split -- are not supported: the harness "
+                "allocates exactly one output buffer. Re-export the model with only the "
+                "output you need, or drop the extra outputs from the graph."
+            )
+        elif getattr(sinfo, "shape", None) is None:
+            why = "it has no shape, so no buffer can be sized for it."
+        else:
+            why = (
+                f"its shape {sinfo.shape} contains a symbolic dimension, which means the "
+                "size depends on the input data. NonZero, Unique, NonMaxSuppression and "
+                "similar operators only learn their output size at run time, and every "
+                "buffer in a bare-metal build is allocated before the program starts."
+            )
+        return CompilationError(
+            stage="harness-generation",
+            command="compile_model",
+            details=f"{what} '{var_name}' cannot be allocated because {why}",
+        )
+
     last_binding = func.body.blocks[-1].bindings[-1]
     out_var_name = last_binding.var.name_hint
     out_info = tensors_mapped.get(out_var_name)
     if out_info is None:
-        raise CompilationError(
-            stage="harness-generation",
-            command="compile_model",
-            details=(
-                f"The model's final value '{out_var_name}' has no static tensor shape "
-                "(models returning a tuple of outputs are not supported yet)."
-            ),
-        )
+        raise no_buffer_error("The model's output", out_var_name, last_binding.var.struct_info)
+
+    # Relax binds more than calls. `gv = lv` (a rename), `gv = x` (a pass-through graph)
+    # and `gv = <constant>` (an operator that constant-folded away) are all ordinary
+    # bindings, and the emitter below only writes code for call_tir. Everything else used
+    # to be skipped in silence -- so when the graph's output was one of these forms, the
+    # output buffer was never written and the model returned whatever was in BSS. Zeros,
+    # with no error anywhere: Gather folded to a constant, LayerNorm (whose frontend
+    # emits `gv = lv`) and Identity all ran to completion and reported a tensor of 0.0.
+    #
+    # A wrong answer that looks like a successful run is worse than a failed build, so
+    # these bindings are resolved rather than ignored.
+    alias_source: dict[str, Any] = {}
+    for block in func.body.blocks:
+        for binding in block.bindings:
+            if isinstance(binding.value, (relax.Var, relax.Constant)):
+                alias_source[binding.var.name_hint] = binding.value
+
+    def resolve_alias(name: str) -> Any:
+        """
+        Follow a chain of renames back to whatever actually produces the value.
+
+        Returns the name of the var a kernel writes (or a graph input), or the
+        relax.Constant the chain ends at. A name that is not a rename comes back
+        unchanged, so callers can use this unconditionally.
+        """
+        seen: set[str] = set()
+        while name in alias_source and name not in seen:
+            seen.add(name)
+            src = alias_source[name]
+            if isinstance(src, relax.Constant):
+                return src
+            name = src.name_hint
+        return name
+
+    def constant_index(const: relax.Constant) -> int:
+        """Position of this constant in constants_list, matched by value as elsewhere."""
+        arr = const.data.numpy()
+        for i, c in enumerate(constants_list):
+            c_arr = c.data.numpy()
+            if c_arr.shape == arr.shape and c_arr.dtype == arr.dtype and np.array_equal(c_arr, arr):
+                return i
+        return -1
+
+    # Every value something downstream actually reads: the operands of each call_tir the
+    # loop below will emit, plus the graph's own output. Used to decide whether a binding
+    # that produces no kernel can be passed over -- see the refusal in that loop.
+    consumed: set[str] = set()
+
+    def note_consumed(expr: Any) -> None:
+        if not isinstance(expr, relax.Var):
+            return
+        src = resolve_alias(expr.name_hint)
+        if not isinstance(src, relax.Constant):
+            consumed.add(src)
+
+    for block in func.body.blocks:
+        for binding in block.bindings:
+            val = binding.value
+            if not isinstance(val, relax.Call) or not isinstance(val.args[0], tvm.ir.GlobalVar):
+                continue
+            operands = val.args[1].fields if isinstance(val.args[1], relax.Tuple) else [val.args[1]]
+            for operand in operands:
+                note_consumed(operand)
+    out_src = resolve_alias(out_var_name)
+    if not isinstance(out_src, relax.Constant):
+        consumed.add(out_src)
 
     # Signature is derived from the graph's own inputs, in order, plus the output.
     run_params = ", ".join(f"void* {info['cname']}_ptr" for info in input_infos) + ", void* output_ptr"
@@ -1747,7 +1904,47 @@ def compile_model(
                 continue
             val = binding.value
             if not isinstance(val.args[0], tvm.ir.GlobalVar):
-                continue
+                # A Call that is not a call_tir into a generated PrimFunc: LegalizeOps had
+                # no rule for the operator and left the relax op standing, so there is no
+                # kernel to call.
+                #
+                # The question is not whether it lowered. It is whether anything reads the
+                # buffer it was supposed to fill. A binding nothing reads costs nothing to
+                # pass over; a binding something reads and nothing writes is how LayerNorm
+                # and Gather used to return zeros.
+                if binding.var.name_hint not in consumed:
+                    continue
+
+                # Read, and resolvable: the `shape_of` / `shape_to_tensor` pair every
+                # transformer from the ONNX frontend contains. Its extents are already
+                # constants, so the values are emitted as stores. Without this the `take`
+                # kernel in models/model.onnx reads an unwritten buffer.
+                shape_values = static_shape_tensor_values(val)
+                if shape_values is not None and binding.var.name_hint in tensors_mapped:
+                    dest = tensors_mapped[binding.var.name_hint]
+                    ctype = c_type_for_dtype(dest["dtype"])
+                    model_run_lines.append(f"  // {dest['name']} = shape_to_tensor(...), resolved at compile time")
+                    for index, extent in enumerate(shape_values):
+                        model_run_lines.append(f"  (({ctype}*)tensor_{dest['cname']}.data)[{index}] = {extent};")
+                    model_run_lines.append("")
+                    continue
+
+                # Read, and not resolvable. relax.cumsum lands here: it survives
+                # legalization, so CumSum built cleanly, booted under QEMU, reported a
+                # cycle count and returned a tensor of 0.0 -- the graph's own output,
+                # never written by anything. Being told the operator cannot be compiled
+                # is worth more than a measurement of the wrong program.
+                op_name = str(getattr(val.op, "name", val.op)).removeprefix("relax.")
+                raise CompilationError(
+                    stage="harness-generation",
+                    command="compile_model",
+                    details=(
+                        f"'{op_name}' could not be lowered to a kernel. TVM has no C "
+                        f"implementation for it, so there is nothing for the bare-metal "
+                        f"harness to call. Replace it in the exported graph with "
+                        f"operators that are supported, or remove it."
+                    ),
+                )
 
             func_name = val.args[0].name_hint
             ffi_name = f"__tvm_ffi_{func_name}"
@@ -1756,18 +1953,26 @@ def compile_model(
             c_args = []
             for arg in args_fields:
                 if isinstance(arg, relax.Var):
-                    c_args.append(f"&tensor_{tensors_mapped[arg.name_hint]['cname']}")
+                    # Through any renames: a kernel reading `lv5` when `lv5 = lv4` has to
+                    # be handed lv4's buffer, because lv5's own pool slot is never written.
+                    src = resolve_alias(arg.name_hint)
+                    if isinstance(src, relax.Constant):
+                        c_args.append(f"&tensor_constant_{constant_index(src)}")
+                    else:
+                        c_args.append(f"&tensor_{tensors_mapped[src]['cname']}")
                 elif isinstance(arg, relax.Constant):
-                    const_idx = -1
-                    arr = arg.data.numpy()
-                    for i, c in enumerate(constants_list):
-                        c_arr = c.data.numpy()
-                        if c_arr.shape == arr.shape and c_arr.dtype == arr.dtype and np.array_equal(c_arr, arr):
-                            const_idx = i
-                            break
-                    c_args.append(f"&tensor_constant_{const_idx}")
+                    c_args.append(f"&tensor_constant_{constant_index(arg)}")
 
-            c_args.append(f"&tensor_{tensors_mapped[binding.var.name_hint]['cname']}")
+            dest_info = tensors_mapped.get(binding.var.name_hint)
+            if dest_info is None:
+                # BatchNorm lands here: it returns R.Tuple(y, mean, var), so the kernel's
+                # destination is a tuple var with no buffer of its own. Unhandled, the
+                # lookup raised KeyError('lv') from inside code generation -- a Python
+                # traceback about a variable that appears nowhere in the user's model.
+                raise no_buffer_error(
+                    f"The result of '{func_name}',", binding.var.name_hint, binding.var.struct_info
+                )
+            c_args.append(f"&tensor_{dest_info['cname']}")
             num_args = len(c_args)
 
             model_run_lines.extend(
@@ -1812,6 +2017,29 @@ def compile_model(
                     "",
                 ]
             )
+
+    # The output binding, when it is not a kernel call. tensor_<out>.data already points
+    # at output_ptr, so the copy lands straight in the caller's buffer.
+    out_source = resolve_alias(out_var_name)
+    if isinstance(out_source, relax.Constant) or out_source != out_var_name:
+        out_c_type = c_type_for_dtype(out_info["dtype"])
+        count = max(1, out_info["num_elements"])
+        if isinstance(out_source, relax.Constant):
+            src_expr = f"(({out_c_type}*)constant_data_{constant_index(out_source)})"
+            src_desc = "a constant -- the operator producing it folded away at compile time"
+        else:
+            src_expr = f"(({out_c_type}*)tensor_{tensors_mapped[out_source]['cname']}.data)"
+            src_desc = f"'{out_source}'"
+        model_run_lines.extend(
+            [
+                f"  // '{out_var_name}' is bound to {src_desc}, not computed by a kernel.",
+                "  // Without this copy the output buffer is never written at all.",
+                f"  for (int i = 0; i < {count}; i++) {{",
+                f"    (({out_c_type}*)output_ptr)[i] = {src_expr}[i];",
+                "  }",
+                "",
+            ]
+        )
 
     model_run_lines.extend(["  return 0;", "}"])
 

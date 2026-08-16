@@ -45,6 +45,7 @@ const S = {
   model: null,          // { path, filename, size_mb, framework, sha256, layer_count }
   target: null,         // one entry from list_targets()
   targets: [],
+  fit: null,            // fit_targets() result for the loaded model, or null before one
   analysis: null,       // analyze_model() result
   mapping: null,        // map_operators() result
   passes: { fuse: true, quantize: false },
@@ -261,6 +262,7 @@ function switchView(view) {
     n.classList.toggle('active', n.dataset.view === view));
   document.querySelectorAll('.rail-step').forEach(n =>
     n.classList.toggle('active', n.dataset.view === view));
+  revealNav(view);
 
   text('crumb-view', VIEW_TITLES[view] || view);
   const scroller = document.querySelector('.view-scroll');
@@ -275,6 +277,21 @@ function switchView(view) {
   if (view === 'artifacts') loadArtifacts();
   if (view === 'validation') loadValidation();
   if (view === 'evidence') loadEvidence();
+}
+
+/* Opens the sidebar group holding a view, if it is collapsed.
+ *
+ * The Advanced group ships closed, but the Report page deep-links straight into
+ * Validation and Engineering Evidence. Without this, following one of those links left
+ * the tree showing no active row at all — the page had changed and the navigator was
+ * still pointing at Report. */
+function revealNav(view) {
+  const item = document.querySelector(`.nav-item[data-view="${view}"]`);
+  const group = item && item.closest('.nav-group');
+  if (!group || !group.hidden) return;
+  group.hidden = false;
+  const head = document.querySelector(`.nav-head[aria-controls="${group.id}"]`);
+  if (head) head.setAttribute('aria-expanded', 'true');
 }
 
 /* Marks a stage complete and refreshes every place that shows stage progress.
@@ -306,7 +323,9 @@ function applyTheme(mode) {
   try { localStorage.setItem('tatva-theme', mode); } catch (_) { /* private mode */ }
   const dark = mode === 'dark';
   $('btn-theme').innerHTML = icon(dark ? 'i-sun' : 'i-moon');
-  $('brand-logo').src = dark ? 'assets/logo-dark.png' : 'assets/logo-light.png';
+  // The wordmark no longer follows the theme. The sidebar it sits in is dark in both
+  // themes now -- that is the template's shell -- so the light-ink logo is the correct
+  // one either way, and swapping in the dark-ink variant painted it black on gray-800.
   if (S.result) requestAnimationFrame(drawChart);   // canvas colours are theme-bound
 }
 
@@ -487,26 +506,82 @@ async function loadTargets() {
   }
 
   S.targets = list;
+  renderTargets();
+
+  const def = list.find(t => t.default) || list[0];
+  selectTarget(def.name);
+}
+
+/* The cards, drawn from the registry and — once a model is loaded — from that model's
+ * fit against each target. Rendering is separate from fetching because the fit arrives
+ * later than the list does, and the cards have to be redrawn when it does. */
+function renderTargets() {
+  const grid = $('target-grid');
+  if (!grid) return;
+  const fitFor = name => (S.fit && (S.fit.targets || []).find(f => f.target === name)) || null;
+
   grid.innerHTML = '';
-  list.forEach(t => {
+  S.targets.forEach(t => {
+    const f = fitFor(t.name);
     const b = el('button', 'pick');
     b.dataset.target = t.name;
+    if (S.target && S.target.name === t.name) b.classList.add('selected');
+    // A target that cannot carry the loaded model stays clickable — someone comparing
+    // chips is entitled to look at it — but it says so before the click, not after a
+    // failed build.
+    if (f && f.verdict === 'BLOCKED') b.classList.add('unfit');
+
+    // The badge vocabulary is the shared one in BADGE_CLASS: green for a clean fit,
+    // amber for a caveat, red for a stop. Nothing new is invented here.
+    const fitBadge =
+      !f ? ''
+      : f.best ? '<span class="badge available">Best fit</span>'
+      : f.verdict === 'BLOCKED' ? '<span class="badge blocked">Will not fit</span>'
+      : f.verdict === 'SLOW' ? '<span class="badge experimental">Software float</span>'
+      : '<span class="badge info">Fits</span>';
+
     b.innerHTML =
       CHECK +
       `<div class="row" style="gap:8px">
          <span class="name">${esc(t.name)}</span>
-         ${t.experimental ? '<span class="badge experimental">Experimental</span>'
-                          : '<span class="badge available">Available</span>'}
-         ${t.default ? '<span class="badge info">Default</span>' : ''}
+         ${fitBadge}
+         ${t.experimental ? '<span class="badge experimental">Experimental</span>' : ''}
        </div>
        <div class="flags">${esc(t.march)} · ${esc(t.mabi)} · ${t.bitness}-bit</div>
-       ${t.notes ? `<div class="desc">${esc(t.notes)}</div>` : ''}`;
+       ${f ? `<div class="desc">${esc(f.headline)}</div>`
+           : t.notes ? `<div class="desc">${esc(t.notes)}</div>` : ''}`;
     b.addEventListener('click', () => selectTarget(t.name));
     grid.appendChild(b);
   });
+}
 
-  const def = list.find(t => t.default) || list[0];
-  selectTarget(def.name);
+/* §2: the chip stops being a free choice the moment a model is loaded. The weights
+ * decide whether the linked image fits under the emulator's ceiling, and the precision
+ * decides whether every multiply becomes a soft-float call — both knowable from the
+ * file, and both previously discovered by running the pipeline and waiting. */
+async function loadTargetFit(path) {
+  S.fit = null;
+  let r;
+  try { r = await call('fit_targets', path); }
+  catch (_) { renderTargets(); show('target-fit', false); return; }
+  if (!r || !r.success) { renderTargets(); show('target-fit', false); return; }
+
+  S.fit = r;
+  renderTargets();
+
+  const box = $('target-fit');
+  const blocked = (r.targets || []).some(f => f.verdict === 'BLOCKED');
+  box.className = 'notice mt ' + (blocked ? 'err' : 'info');
+  const use = box.querySelector('use');
+  if (use) use.setAttribute('href', blocked ? '#i-alert' : '#i-info');
+  text('target-fit-text', r.summary || '');
+  show('target-fit', true);
+
+  // Selecting the best fit rather than only naming it: the default target is the right
+  // answer for most models and the wrong one for some, and leaving the wrong one
+  // selected while a card says "Best fit" elsewhere is worse than not checking at all.
+  // Every other target stays one click away.
+  if (r.best && (!S.target || S.target.name !== r.best)) selectTarget(r.best);
 }
 
 function selectTarget(name) {
@@ -520,11 +595,17 @@ function selectTarget(name) {
   text('ov-target', t.name);
   text('ov-target-n', `${t.march} · ${t.bitness}-bit`);
 
-  const warn = t.experimental
-    ? `${t.name} is experimental. ${t.notes || ''}`.trim()
-    : '';
-  show('target-warn', !!warn);
-  if (warn) text('target-warn-text', warn);
+  // What is worth knowing before this target is used: that it is experimental, and
+  // whatever the loaded model's fit against it turned up. The second is only available
+  // once a model has been read, so the box carries whichever of the two exist.
+  const f = S.fit && (S.fit.targets || []).find(x => x.target === name);
+  const lines = [];
+  if (t.experimental) lines.push(`${t.name} is experimental. ${t.notes || ''}`.trim());
+  if (f && f.verdict !== 'FITS') lines.push(...(f.reasons || []));
+  const box = $('target-warn');
+  if (box) box.className = 'notice mt ' + (f && f.verdict === 'BLOCKED' ? 'err' : 'warn');
+  show('target-warn', lines.length > 0);
+  if (lines.length) text('target-warn-text', lines.join(' '));
 
   // The chip changed, so the mapping and the measurement no longer describe
   // what is selected. Invalidating is safer than leaving a stale verdict on screen.
@@ -740,6 +821,7 @@ async function validateModel(path) {
   // family. Fired after the stage is already usable, so a slow read cannot delay the
   // Continue button.
   loadModelDetail(path);
+  loadTargetFit(path);
 }
 
 /* ============================================================ STAGE 02 — analyze */
@@ -794,7 +876,10 @@ async function runAnalyze() {
 }
 
 /* ============================================================ STAGE 03 — map */
-async function runMap() {
+/* `keepFixResult` is set only by the re-map that follows a successful repair. Without it
+ * that re-map wiped the "What was rewritten" card it was called to confirm, so a working
+ * rewrite left no trace on screen and read as a button that did nothing. */
+async function runMap({ keepFixResult = false } = {}) {
   if (!S.model) { switchView('s1'); stageError('s1', 'Load a model first.'); return; }
   if (!S.target) { switchView('s1'); stageError('s1', 'Pick a target first.'); return; }
   clearStageError('s3');
@@ -820,6 +905,7 @@ async function runMap() {
     if (vicon) vicon.setAttribute('href', m.ready ? '#i-check' : '#i-alert');
     // "Stage 05 can compile this model" overpromised: mapping proves operator coverage,
     // not that a cross-compiler is installed. Stage 05 does its own preflight for that.
+    const repairedOps = m.repaired ? (m.repaired_ops || []) : [];
     text('s3-verdict-text', m.ready
       ? `All ${m.distinct_ops} operator kinds in this graph have a lowering on ${m.target}. `
         + 'Nothing in this graph will block stage 05.'
@@ -829,12 +915,20 @@ async function runMap() {
 
     const warns = $('s3-warnings');
     warns.innerHTML = '';
+    // Which graph the table below describes. A repaired graph that reported itself as
+    // simply "clean" would hide the rewrite the build depends on.
+    if (repairedOps.length) {
+      warns.appendChild(el('div', 'notice ok',
+        `${icon('i-check')}<span>Rewritten graph — ${esc(repairedOps.join(', '))} replaced by `
+        + 'operators this target can lower. The table below, and the build in stage 05, are '
+        + 'this graph and not the file on disk.</span>'));
+    }
     (m.warnings || []).forEach(w => {
       warns.appendChild(el('div', 'notice warn', `${icon('i-alert')}<span>${esc(w)}</span>`));
     });
 
     renderMapTable(m);
-    renderFixOffer(m);
+    renderFixOffer(m, keepFixResult);
 
     show('s3-empty', false); show('s3-result', true);
     markDone('s3', true);
@@ -893,12 +987,16 @@ function renderMapTable(m) {
  * for something in this graph (§33 -- no button that does nothing). When operators are
  * unmapped and none is repairable, the box still appears, says so, and carries no
  * button. */
-function renderFixOffer(m) {
+function renderFixOffer(m, keepFixResult) {
   const unsupported = m.unsupported || [];
   const fixable = m.fixable || [];
   const blocking = m.blocking || [];
-  show('s3-fix-result', false);
-  $('s3-fix-result').innerHTML = '';
+  // The record of a rewrite outlives the re-map that confirms it; every other path into
+  // this function is describing a graph nobody has repaired yet, and clears it.
+  if (!keepFixResult) {
+    show('s3-fix-result', false);
+    $('s3-fix-result').innerHTML = '';
+  }
 
   if (!unsupported.length) { show('s3-fix-offer', false); return; }
 
@@ -977,10 +1075,10 @@ async function runAutoFix() {
     host.appendChild(card);
   }
 
-  // Re-map so the table shows the graph as it now stands. The repaired module is held
-  // in the backend against this model and target, and the pipeline compiles that one --
+  // Re-map so the table shows the graph as it now stands. The backend maps the held
+  // repaired module for this model and target, and the pipeline compiles that same one,
   // so the table and the build agree.
-  if (r.applied) await runMap();
+  if (r.applied) await runMap({ keepFixResult: true });
 }
 
 /* §22: the chip's own operator table, with no model involved. */
@@ -2180,7 +2278,9 @@ function wire() {
   $('btn-analyze').addEventListener('click', runAnalyze);
   $('btn-s2-next').addEventListener('click', () => switchView('s3'));
 
-  $('btn-map').addEventListener('click', runMap);
+  // Wrapped rather than passed directly: the listener would hand runMap the click event
+  // as its options object.
+  $('btn-map').addEventListener('click', () => runMap());
   $('btn-autofix').addEventListener('click', runAutoFix);
   $('btn-caps').addEventListener('click', loadCapabilities);
   $('btn-s3-next').addEventListener('click', () => switchView('s4'));

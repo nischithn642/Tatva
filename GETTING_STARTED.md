@@ -13,7 +13,7 @@ reference; this is the walkthrough.
 
 | You have | Start here | Time to first result |
 | :--- | :--- | :--- |
-| `TATVA-2.1-windows.zip` | [The app](#the-app) | ~5 minutes, nothing to download |
+| `TATVA-2.1.1-windows.zip` | [The app](#the-app) | ~5 minutes, nothing to download |
 | Python 3.12 or 3.13 and a terminal | [The CLI](#the-cli) | ~10 minutes |
 | A clone of this repository | [From source](#from-source) | ~15 minutes |
 
@@ -126,7 +126,7 @@ The wheel is not one of the release downloads — build it from the repository w
 `uv build`, which writes it to `dist/`, then:
 
 ```bash
-pip install tatva_compiler-2.1.0-py3-none-any.whl
+pip install tatva_compiler-2.1.1-py3-none-any.whl
 ```
 
 Requires Python 3.12 or 3.13. Apache TVM publishes no wheels for 3.14 yet, and TATVA uses
@@ -192,7 +192,7 @@ To build the shareable zip yourself:
 python build_exe.py
 ```
 
-That writes `dist/TATVA/TATVA.exe` and `dist/TATVA-2.1-windows.zip`. PyInstaller
+That writes `dist/TATVA/TATVA.exe` and `dist/TATVA-2.1.1-windows.zip`. PyInstaller
 does not cross-compile — build on the OS you are shipping to.
 
 ---
@@ -259,4 +259,4 @@ does, run `tatva doctor` from a source install for a readable diagnosis.
 - [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md) — what gets installed, from where, and how it is pinned
 - [OPTIMIZATION.md](OPTIMIZATION.md) — the softmax derivation and the quantization findings
 - [docs/EXTENDING_TARGETS.md](docs/EXTENDING_TARGETS.md) — adding a RISC-V target variant
-- [CHANGELOG.md](CHANGELOG.md) — what changed in 2.1
+- [CHANGELOG.md](CHANGELOG.md) — what changed in 2.1.1

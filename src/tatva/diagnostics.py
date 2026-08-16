@@ -428,6 +428,24 @@ def get_offline_explanation(context: DiagnosisContext) -> str:
         stage = meta.get("stage") or "compilation"
         cmd = meta.get("command") or "(command not recorded)"
         detail = meta.get("details") or ""
+        if stage == "import":
+            # An import-stage failure never reached a compiler, so the cross-compilation
+            # advice below is not merely unhelpful, it is misleading: it sends the user
+            # to check gcc flags and link.ld for a model that TVM refused to read.
+            return (
+                "Import failure: TVM's ONNX frontend could not convert this model, so nothing "
+                "was compiled.\n"
+                + (f"{detail}\n" if detail else "")
+                + f"Command executed: '{cmd}'\n"
+                "Mitigation:\n"
+                "1. Check which operator the error names. The frontend converts operator by "
+                "operator, so the failure is almost always one node rather than the whole graph.\n"
+                "2. Re-export the model with a different opset version, or with the exporter's "
+                "operator-decomposition option enabled, so that node is expressed differently.\n"
+                "3. If the operator is one TATVA can rewrite, run `tatva repair` -- but note that "
+                "repair works on the imported graph, so an operator that fails here never gets "
+                "that far and has to be changed at export time."
+            )
         return (
             f"Compilation failure: The cross-compilation build stage failed during the '{stage}' step.\n"
             + (f"{detail}\n" if detail else "")
